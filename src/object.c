@@ -78,16 +78,23 @@ robj *createRawStringObject(const char *ptr, size_t len) {
     return createObject(OBJ_STRING, sdsnewlen(ptr,len));
 }
 
-/* Create a string object with encoding OBJ_ENCODING_EMBSTR, that is
+/* Create a string object with encoding REDIS_ENCODING_EMBSTR, that is
  * an object where the sds string is actually an unmodifiable string
- * allocated in the same chunk as the object itself. */
+ * allocated in the same chunk as the object itself.
+ *
+ * |---------------------- RedisObject ---------------------|------ Sdshdr ------|-------- buf[] --------|
+ * | <Type> | <Encoding> |  <Lru>  | <Refcount> |   <Ptr>   |  <Len>  |  <Free>  |  <String>  |  <'\0'>  |
+ *   4 Bits     4 Bits     24 Bits    4 Bytes      8 Bytes    4 Bytes    4 Bytes    Len Bytes    1 Byte
+ * ^                                                        ^                    ^
+ * o                                                        sh                 o->ptr
+ */
 robj *createEmbeddedStringObject(const char *ptr, size_t len) {
     robj *o = zmalloc(sizeof(robj)+sizeof(struct sdshdr8)+len+1);
-    struct sdshdr8 *sh = (void*)(o+1);
+    struct sdshdr8 *sh = (void*)(o+1);                        // o指向的位置再向后移动sizeof(robj)
 
     o->type = OBJ_STRING;
     o->encoding = OBJ_ENCODING_EMBSTR;
-    o->ptr = sh+1;
+    o->ptr = sh+1;                                            // sh指向的位置再向后移动sizeof(sdshdr)
     o->refcount = 1;
     if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
         o->lru = (LFUGetTimeInMinutes()<<8) | LFU_INIT_VAL;

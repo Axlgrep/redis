@@ -93,7 +93,12 @@ static void _intsetSet(intset *is, int pos, int64_t value) {
     }
 }
 
-/* Create an empty intset. */
+/* Create an empty intset:
+ *  |----------- Intset ------------|
+ *  |     <Encoding>     | <Length> |
+ *  |      4 Bytes       |  4 Bytes |
+ *  |  INTSET_ENC_INT16  |    0     |
+ */
 intset *intsetNew(void) {
     intset *is = zmalloc(sizeof(intset));
     is->encoding = intrev32ifbe(INTSET_ENC_INT16);
@@ -122,7 +127,10 @@ static uint8_t intsetSearch(intset *is, int64_t value, uint32_t *pos) {
         return 0;
     } else {
         /* Check for the case where we know we cannot find the value,
-         * but do know the insert position. */
+         * but do know the insert position.
+         * 如果当前插入的元素比集合中最大的元素都要大或者比最小的元素都要小
+         * 那么该元素肯定不在这个集合当中
+         */
         if (value > _intsetGet(is,intrev32ifbe(is->length)-1)) {
             if (pos) *pos = intrev32ifbe(is->length);
             return 0;
@@ -153,7 +161,31 @@ static uint8_t intsetSearch(intset *is, int64_t value, uint32_t *pos) {
     }
 }
 
-/* Upgrades the intset to a larger encoding and inserts the given integer. */
+/* Upgrades the intset to a larger encoding and inserts the given integer.
+ *
+ * e.g..
+ *  |----------- Intset ------------|----------- contents[] ------------|
+ *  |     <Encoding>     | <Length> |     <elem1>     |     <elem2>     |
+ *  |      4 Bytes       |  4 Bytes |     2 Bytes     |     2 Bytes     |
+ *  |  INTSET_ENC_INT16  |    2     |       10        |       20        |
+ *
+ *
+ * After add INT16_MIN - 1 and upgrade to INTSET_ENC_INT32:
+ *
+ *  |     <Encoding>     | <Length> |     <elem1>     |     <elem2>     |     <elem3>     |
+ *  |      4 Bytes       |  4 Bytes |     4 Bytes     |     4 Bytes     |     4 Bytes     |
+ *  |  INTSET_ENC_INT32  |    3     |  INT16_MIN - 1  |       10        |       20        |
+ *
+ *
+ * After add INT16_MAX + 1 and upgrade to INTSET_ENC_INT32:
+ *
+ *  |     <Encoding>     | <Length> |     <elem1>     |     <elem2>     |     <elem3>     |
+ *  |      4 Bytes       |  4 Bytes |     4 Bytes     |     4 Bytes     |     4 Bytes     |
+ *  |  INTSET_ENC_INT32  |    3     |       10        |       20        |  INT16_MAX + 1  |
+ *
+ * 如果添加了一个元素导致intset升级，那么新元素要么小于集合中所有元素要么大于集合中所有元素
+ * 前者就将新元素放到元素列表起始位置，后者就放到元素列表末尾位置
+ */
 static intset *intsetUpgradeAndAdd(intset *is, int64_t value) {
     uint8_t curenc = intrev32ifbe(is->encoding);
     uint8_t newenc = _intsetValueEncoding(value);
@@ -202,13 +234,16 @@ static void intsetMoveTail(intset *is, uint32_t from, uint32_t to) {
 
 /* Insert an integer in the intset */
 intset *intsetAdd(intset *is, int64_t value, uint8_t *success) {
+    // 返回当前插入value的类型，是INTSET_ENC_INT64还是INTSET_ENC_INT32还是...
     uint8_t valenc = _intsetValueEncoding(value);
     uint32_t pos;
     if (success) *success = 1;
 
     /* Upgrade encoding if necessary. If we need to upgrade, we know that
      * this value should be either appended (if > 0) or prepended (if < 0),
-     * because it lies outside the range of existing values. */
+     * because it lies outside the range of existing values.
+     * 如果插入value的类型范围比intset当前范围类型要大，则执行升级操作
+     */
     if (valenc > intrev32ifbe(is->encoding)) {
         /* This always succeeds, so we don't need to curry *success. */
         return intsetUpgradeAndAdd(is,value);
@@ -221,7 +256,9 @@ intset *intsetAdd(intset *is, int64_t value, uint8_t *success) {
             return is;
         }
 
+        // 新添加一个元素，intset需要扩容
         is = intsetResize(is,intrev32ifbe(is->length)+1);
+        // 如果插入的位置不是在末尾, 则需要将intset后面的元素依次向后挪一个位置
         if (pos < intrev32ifbe(is->length)) intsetMoveTail(is,pos,pos+1);
     }
 
@@ -236,6 +273,7 @@ intset *intsetRemove(intset *is, int64_t value, int *success) {
     uint32_t pos;
     if (success) *success = 0;
 
+    // 如果value的类型在intset负责的区间之内 && 在intset内部可以找到value
     if (valenc <= intrev32ifbe(is->encoding) && intsetSearch(is,value,&pos)) {
         uint32_t len = intrev32ifbe(is->length);
 
@@ -243,6 +281,8 @@ intset *intsetRemove(intset *is, int64_t value, int *success) {
         if (success) *success = 1;
 
         /* Overwrite value with tail and update length */
+        // 如果intset中需要被删除的value后面还有其他元素, 则都依次向前
+        // 挪一个位置
         if (pos < (len-1)) intsetMoveTail(is,pos+1,pos);
         is = intsetResize(is,len-1);
         is->length = intrev32ifbe(len-1);
@@ -256,7 +296,9 @@ uint8_t intsetFind(intset *is, int64_t value) {
     return valenc <= intrev32ifbe(is->encoding) && intsetSearch(is,value,NULL);
 }
 
-/* Return random member */
+/* Return random member
+ * 生成一个随机数模以intset的长度作为移除元素的下标
+ */
 int64_t intsetRandom(intset *is) {
     return _intsetGet(is,rand()%intrev32ifbe(is->length));
 }

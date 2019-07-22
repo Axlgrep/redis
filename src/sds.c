@@ -80,7 +80,33 @@ static inline char sdsReqType(size_t string_size) {
  *
  * You can print the string with printf() as there is an implicit \0 at the
  * end of the string. However the string is binary safe and can contain
- * \0 characters in the middle, as the length is stored in the sds header. */
+ * \0 characters in the middle, as the length is stored in the sds header.
+ *
+ *
+ * sds的大小由三部分确定: sizeof(sdshdr) + 字符串的长度 + 末尾一个字节用来存
+ * 结束符, 但是sdshdr的类型有很多(不同类型sdshdr内部len和alloc字段占用空间不
+ * 一样), sds的sdshdr类型根据字符串的size来确认, 如果0 < size < 2^5, 那么类型
+ * 就是SDS_TYPE_5, 如果2^5 <= size < 2^8, 那么类型就是SDS_TYPE_8, 以此类推...
+ *
+ * e.g..
+ *
+ * Type SDS_TYPE_5 SDS:
+ *    |------------ sdshdr5 ------------|----------- buf[] ------------|
+ *    | <Flags::length> | <Flags::type> |    <String>   |  <Tail Char> |
+ *    |     5 Bits      |    3 Bits     |     7 Bytes   |    1 Bytes   |
+ *    |       7         |  SDS_TYPE_5   |     Xxx_axl   |      \0      |
+ *                                      ^
+ *                                      s
+ *
+ * Type SDS_TYPE_16 SDS:
+ *    |------------------------- sdshdr16 -------------------------|----------- buf[] -----------|
+ *    |   <Len>   |  <Alloc>  |  <Flags::length>  |  <Flags::type> |    <String>   | <Tail Char> |
+ *    |  2 Bytes  |  2 Bytes  |       5 Bits      |     3 Bits     |   2^10 Bytes  |   1 Bytes   |
+ *    |    2^10   |    2^10   |       unused      |   SDS_TYPE_16  |    Xxx..axl   |     \0      |
+ *                                                                 ^
+ *                                                                 s
+ */
+
 sds sdsnewlen(const void *init, size_t initlen) {
     void *sh;
     sds s;

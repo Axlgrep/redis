@@ -93,6 +93,9 @@ int setTypeRemove(robj *setobj, sds value) {
             return 1;
         }
     } else if (setobj->encoding == OBJ_ENCODING_INTSET) {
+        // 如果当前robj的编码类型是OBJ_ENCODING_INTSET, 但是value
+        // 并不能被转换成LongLong类型，那么说明value肯定不在当前
+        // intset当中
         if (isSdsRepresentableAsLongLong(value,&llval) == C_OK) {
             int success;
             setobj->ptr = intsetRemove(setobj->ptr,llval,&success);
@@ -291,6 +294,7 @@ void sremCommand(client *c) {
     robj *set;
     int j, deleted = 0, keyremoved = 0;
 
+    // Key不存在 || Key对应的类型不是OBJ_SET，报错
     if ((set = lookupKeyWriteOrReply(c,c->argv[1],shared.czero)) == NULL ||
         checkType(c,set,OBJ_SET)) return;
 

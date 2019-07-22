@@ -150,11 +150,17 @@ int dictExpand(dict *d, unsigned long size)
     unsigned long realsize = _dictNextPower(size);
 
     /* the size is invalid if it is smaller than the number of
-     * elements already inside the hash table */
+     * elements already inside the hash table
+     * 如果正在执行rehash操作， 或者当前ht[0]指向的hashtable使用
+     * 大小比期望分配的大小要大，则返回DICT_ERR
+     */
     if (dictIsRehashing(d) || d->ht[0].used > size)
         return DICT_ERR;
 
-    /* Rehashing to the same table size is not useful. */
+    /* Rehashing to the same table size is not useful.
+     * 如果ht[0]指向的hashtable的容量与我们计算出来的
+     * realsize大小相同，则返回DICT_ERR
+     */
     if (realsize == d->ht[0].size) return DICT_ERR;
 
     /* Allocate the new hash table and initialize all pointers to NULL */
@@ -164,13 +170,18 @@ int dictExpand(dict *d, unsigned long size)
     n.used = 0;
 
     /* Is this the first initialization? If so it's not really a rehashing
-     * we just set the first hash table so that it can accept keys. */
+     * we just set the first hash table so that it can accept keys.
+     * 如果是初次初始化操作，那么令ht[0]指向新生成的hashtable
+     */
     if (d->ht[0].table == NULL) {
         d->ht[0] = n;
         return DICT_OK;
     }
 
-    /* Prepare a second hash table for incremental rehashing */
+    /* Prepare a second hash table for incremental rehashing
+     * 如果是执行的扩容操作，那么令ht[1]指向新生成的hashtable, 并
+     * 且准备执行rehash操作
+     */
     d->ht[1] = n;
     d->rehashidx = 0;
     return DICT_OK;
@@ -184,7 +195,18 @@ int dictExpand(dict *d, unsigned long size)
  * since part of the hash table may be composed of empty spaces, it is not
  * guaranteed that this function will rehash even a single bucket, since it
  * will visit at max N*10 empty buckets in total, otherwise the amount of
- * work it does would be unbound and the function may block for a long time. */
+ * work it does would be unbound and the function may block for a long time.
+ *
+ * n实际上是这次rehash移动非空bucket的数量, 但是由于可能会有一些bucket是空
+ * 的，所以为了避免遍历过多的空bucket，在这里加了一个empty_visits的限制
+ *
+ * 该方法比较简单，遍历ht[0]当前bucket上的元素，然后通过元素的key和ht[1]的
+ * sizemask计算出该元素在ht[1]上的位置，并且将其添加到ht[1]对应的bucket上，
+ * 再将其从ht[0]上删除, 最后判断ht[0]上的元素是否完全迁移完毕, 如果是，则
+ * 释放原先ht[0]的hashtable, 然后令ht[0]指向ht[1]的hashtable并且重置ht[1]，
+ * 最后令rehashidx为-1, 标志着当前没有rehash操作
+ *
+ */
 int dictRehash(dict *d, int n) {
     int empty_visits = n*10; /* Max number of empty buckets to visit. */
     if (!dictIsRehashing(d)) return 0;
@@ -360,7 +382,11 @@ dictEntry *dictAddOrFind(dict *d, void *key) {
 
 /* Search and remove an element. This is an helper function for
  * dictDelete() and dictUnlink(), please check the top comment
- * of those functions. */
+ * of those functions.
+ * 从dict里面删除指定Key的Entry, 如果找不到则返回NULL, 否则返回该
+ * Entry的指针, 需要注意的是，如果nofree为0，那么返回的可能是一个
+ * 野指针?
+ */
 static dictEntry *dictGenericDelete(dict *d, const void *key, int nofree) {
     unsigned int h, idx;
     dictEntry *he, *prevHe;
@@ -606,7 +632,11 @@ void dictReleaseIterator(dictIterator *iter)
 }
 
 /* Return a random entry from the hash table. Useful to
- * implement randomized algorithms */
+ * implement randomized algorithms
+ *
+ * 实现很简单, 先随机在ht[0]和ht[1]中获取一个非空bucket,
+ * 然后再在这个非空bucket指向的链表中随机获取一个元素返回
+ */
 dictEntry *dictGetRandomKey(dict *d)
 {
     dictEntry *he, *orighe;
@@ -954,7 +984,11 @@ static unsigned long _dictNextPower(unsigned long size)
  * and the optional output parameter may be filled.
  *
  * Note that if we are in the process of rehashing the hash table, the
- * index is always returned in the context of the second (new) hash table. */
+ * index is always returned in the context of the second (new) hash table.
+ *
+ * 为给定key计算一个hashtable的index, 如果这个key已经存在于dict中，那么返回-1,
+ * 需要注意的是如果dict当前正在执行rehash操作，那么返回的一定是ht[1]中的index
+ */
 static int _dictKeyIndex(dict *d, const void *key, unsigned int hash, dictEntry **existing)
 {
     unsigned int idx, table;
