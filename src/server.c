@@ -3747,6 +3747,9 @@ int main(int argc, char **argv) {
             /* Replace the config file in server.exec_argv with
              * its absoulte path. */
             zfree(server.exec_argv[j]);
+            // server.exec_argv数组中记录的是启动Redis服务时的
+            // 参数，现在将配置文件路径换成我们计算出来的绝对
+            // 路径
             server.exec_argv[j] = zstrdup(server.configfile);
             j++;
         }
@@ -3755,6 +3758,8 @@ int main(int argc, char **argv) {
          * configuration file. For instance --port 6380 will generate the
          * string "port 6380\n" to be parsed after the actual file name
          * is parsed, if any. */
+        // 用\n分隔每个配置项, 如果./redis-server --port 7777 --slaveof 127.0.0.1 8888
+        // 那么option=(port "7777"\nslaveof "127.0.0.1" "8888" )
         while(j != argc) {
             if (argv[j][0] == '-' && argv[j][1] == '-') {
                 /* Option name */

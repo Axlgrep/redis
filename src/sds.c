@@ -125,7 +125,7 @@ sds sdsnewlen(const void *init, size_t initlen) {
     fp = ((unsigned char*)s)-1;
     switch(type) {
         case SDS_TYPE_5: {
-            *fp = type | (initlen << SDS_TYPE_BITS);
+            *fp = type | (initlen << SDS_TYPE_BITS);  //低3Bits存Type, 高5Bits存长度
             break;
         }
         case SDS_TYPE_8: {
@@ -228,14 +228,20 @@ sds sdsMakeRoomFor(sds s, size_t addlen) {
     int hdrlen;
 
     /* Return ASAP if there is enough space left. */
+    // 如果剩余空间大于addlen, 则直接无需额外操作，直
+    // 接返回就行
     if (avail >= addlen) return s;
 
     len = sdslen(s);
     sh = (char*)s-sdsHdrSize(oldtype);
     newlen = (len+addlen);
     if (newlen < SDS_MAX_PREALLOC)
+        // 如果newlen小于1MB，那么我们申请两倍newlen，防止
+        // 下次再追加内容需要重新分配buffer
         newlen *= 2;
     else
+        // 如果newlen大于等于1MB，那么我们在newlen基础上多
+        // 分配1MB的空间
         newlen += SDS_MAX_PREALLOC;
 
     type = sdsReqType(newlen);
@@ -243,16 +249,21 @@ sds sdsMakeRoomFor(sds s, size_t addlen) {
     /* Don't use type 5: the user is appending to the string and type 5 is
      * not able to remember empty space, so sdsMakeRoomFor() must be called
      * at every appending operation. */
+    // SDS_TYPE_5无法记录剩余容量大小，所以在这里我们直接用SDS_TYPE_8
     if (type == SDS_TYPE_5) type = SDS_TYPE_8;
 
     hdrlen = sdsHdrSize(type);
     if (oldtype==type) {
+        // 如果newlen在oldtype范围下还能容纳，那么直接realloc就行
         newsh = s_realloc(sh, hdrlen+newlen+1);
         if (newsh == NULL) return NULL;
         s = (char*)newsh+hdrlen;
     } else {
         /* Since the header size changes, need to move the string forward,
          * and can't use realloc */
+        // 如果类型变化了，则头部大小也会发生变化，不能直接realloc了,
+        // 需要malloc之后将字符串拷贝到新分配的buffer上, 然后释放之前
+        // 的sds
         newsh = s_malloc(hdrlen+newlen+1);
         if (newsh == NULL) return NULL;
         memcpy((char*)newsh+hdrlen, s, len+1);
@@ -405,6 +416,8 @@ sds sdsgrowzero(sds s, size_t len) {
 sds sdscatlen(sds s, const void *t, size_t len) {
     size_t curlen = sdslen(s);
 
+    // 先判断剩余空间够不够，然后再在buffer后追加
+    // 内容
     s = sdsMakeRoomFor(s,len);
     if (s == NULL) return NULL;
     memcpy(s+curlen, t, len);
@@ -846,7 +859,7 @@ sds *sdssplitlen(const char *s, int len, const char *sep, int seplen, int *count
         }
         /* search the separator */
         if ((seplen == 1 && *(s+j) == sep[0]) || (memcmp(s+j,sep,seplen) == 0)) {
-            tokens[elements] = sdsnewlen(s+start,j-start);
+            tokens[elements] = sdsnewlen(s+start,j-start); // s+start是指针，j-start是长度
             if (tokens[elements] == NULL) goto cleanup;
             elements++;
             start = j+seplen;

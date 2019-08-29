@@ -374,6 +374,8 @@ int dictReplace(dict *d, void *key, void *val)
  * existing key is returned.)
  *
  * See dictAddRaw() for more information. */
+// 实际上就是尝试添加一个Key, 如果已经存在则把对应的
+// dictEntry返回，如果不存在就新添加并且返回dictEntry
 dictEntry *dictAddOrFind(dict *d, void *key) {
     dictEntry *entry, *existing;
     entry = dictAddRaw(d,key,&existing);
@@ -730,14 +732,20 @@ unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count) {
             /* Invariant of the dict.c rehashing: up to the indexes already
              * visited in ht[0] during the rehashing, there are no populated
              * buckets, so we can skip ht[0] for indexes between 0 and idx-1. */
+            // 如果当前正在执行rehash操作，并且当前正在ht[0]上的失效idx上(ht[0]的
+            // 0 ~ idx-1上的dictEntry由于rehash操作已经迁移到ht[1]上去了)
             if (tables == 2 && j == 0 && i < (unsigned long) d->rehashidx) {
                 /* Moreover, if we are currently out of range in the second
                  * table, there will be no elements in both tables up to
                  * the current rehashing index, so we jump if possible.
                  * (this happens when going from big to small table). */
+                // 如果当前的idx已经在第二个HashTable区间之外了，那么我们将
+                // idx重置为第一个HashTable Rehash所在的位置
                 if (i >= d->ht[1].size) i = d->rehashidx;
                 continue;
             }
+            // 如果索引已经在当前HashTable之外，那么跳到下一个HashTable(如果没有下
+            // 一个HashTable，那么重新计算索引)
             if (i >= d->ht[j].size) continue; /* Out of range for this table. */
             dictEntry *he = d->ht[j].table[i];
 
@@ -745,12 +753,16 @@ unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count) {
              * locations if they reach 'count' (with a minimum of 5). */
             if (he == NULL) {
                 emptylen++;
+                // 为了避免遍历一系列连续的empty buckets导致服务阻塞，在连续
+                // 遍历了一定数量的empty buckest之后，我们重新计算索引值，并
+                // 且重置emptylen
                 if (emptylen >= 5 && emptylen > count) {
                     i = random() & maxsizemask;
                     emptylen = 0;
                 }
             } else {
                 emptylen = 0;
+                // 获取dictEntry存入des当中，更新stored
                 while (he) {
                     /* Collect all the elements of the buckets found non
                      * empty while iterating. */

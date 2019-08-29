@@ -780,6 +780,9 @@ void loadServerConfig(char *filename, char *options) {
         if (fp != stdin) fclose(fp);
     }
     /* Append the additional options */
+    // 先将配置文件中的配置项加载到config中，然后再将额外的
+    // 配置项追加到config后，这样的话就算config中有两个相同
+    // 配置项，也是以靠后的那个为准
     if (options) {
         config = sdscat(config,"\n");
         config = sdscat(config,options);

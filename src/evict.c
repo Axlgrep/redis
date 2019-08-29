@@ -178,6 +178,9 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
         /* If the dictionary we are sampling from is not the main
          * dictionary (but the expires one) we need to lookup the key
          * again in the key dictionary to obtain the value object. */
+        // 如果我们采样的字典并不是主要字典，我们需要重新在主要字典里面
+        // 获取dictEntry的Value(比如采样字典是db->expires, 而主要字典是
+        // db->dict)
         if (server.maxmemory_policy != MAXMEMORY_VOLATILE_TTL) {
             if (sampledict != keydict) de = dictFind(keydict, key);
             o = dictGetVal(de);
@@ -354,6 +357,7 @@ unsigned long LFUDecrAndReturn(robj *o) {
 /* We don't want to count AOF buffers and slaves output buffers as
  * used memory: the eviction should use mostly data size. This function
  * returns the sum of AOF and slaves buffer. */
+// AOF buffers和Slave的output buffers不计算在总内存使用之内
 size_t freeMemoryGetNotCountedMemory(void) {
     size_t overhead = 0;
     int slaves = listLength(server.slaves);

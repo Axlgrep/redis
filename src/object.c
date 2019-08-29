@@ -82,11 +82,15 @@ robj *createRawStringObject(const char *ptr, size_t len) {
  * an object where the sds string is actually an unmodifiable string
  * allocated in the same chunk as the object itself.
  *
- * |---------------------- RedisObject ---------------------|------ Sdshdr ------|-------- buf[] --------|
- * | <Type> | <Encoding> |  <Lru>  | <Refcount> |   <Ptr>   |  <Len>  |  <Free>  |  <String>  |  <'\0'>  |
- *   4 Bits     4 Bits     24 Bits    4 Bytes      8 Bytes    4 Bytes    4 Bytes    Len Bytes    1 Byte
- * ^                                                        ^                    ^
- * o                                                        sh                 o->ptr
+ * |---------------------- RedisObject ---------------------|---------- Sdshdr ----------|-------- buf[] --------|
+ * | <Type> | <Encoding> |  <Lru>  | <Refcount> |   <Ptr>   |  <Len>  |  <Free> | <Flag> |  <String>  |  <'\0'>  |
+ *   4 Bits     4 Bits     24 Bits    4 Bytes      8 Bytes     1 Byte    1 Byte   1 Byte    Len Bytes    1 Byte
+ * ^                                                        ^                            ^
+ * o                                                        sh                          o->ptr
+ *
+ * EmbeddedStringObject和RawStringObject的区别是后者RedisObject和SDS内存是分离的，而前者
+ * RedisObject和SDS内存是连续的，这样访问起来更加高效(空间局部性)
+ *
  */
 robj *createEmbeddedStringObject(const char *ptr, size_t len) {
     robj *o = zmalloc(sizeof(robj)+sizeof(struct sdshdr8)+len+1);

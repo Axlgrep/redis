@@ -234,7 +234,12 @@ void _addReplyObjectToList(client *c, robj *o) {
 
         /* Append to this object when possible. If tail == NULL it was
          * set via addDeferredMultiBulkLength(). */
+        // 如果reply list中最后一个Node 字符串大小 + 当前reply大小小于16KB, 那
+        // 么将reply追加到最后一个Node对应的字符串末尾，否则新创建一个Node用于
+        // 存储reply
         if (tail && sdslen(tail)+sdslen(o->ptr) <= PROTO_REPLY_CHUNK_BYTES) {
+            // 将当前reply的内容追加到reply list末尾Node存储的字符串末尾(由于
+            // sdscatsds()可能会重新分配内存，所以需要listNodeValue(ln) = tail)
             tail = sdscatsds(tail,o->ptr);
             listNodeValue(ln) = tail;
             c->reply_bytes += sdslen(o->ptr);
@@ -318,6 +323,10 @@ void addReply(client *c, robj *obj) {
      * If the encoding is RAW and there is room in the static buffer
      * we'll be able to send the object to the client without
      * messing with its page. */
+    // 如果reply obj的编码形式是OBJ_ENCODING_RAW或者OBJ_ENCODING_EMBSTR,
+    // 如果可以的话(client的reply链表为空，并且output buffer可以容纳当前
+    // 的reply obj)，优先将reply obj追加到client的output buffer当中, 否则
+    // 追加到reply list后面
     if (sdsEncodedObject(obj)) {
         if (_addReplyToBuffer(c,obj->ptr,sdslen(obj->ptr)) != C_OK)
             _addReplyObjectToList(c,obj);
@@ -325,6 +334,11 @@ void addReply(client *c, robj *obj) {
         /* Optimization: if there is room in the static buffer for 32 bytes
          * (more than the max chars a 64 bit integer can take as string) we
          * avoid decoding the object and go for the lower level approach. */
+        // 符合条件则直接追加到client的output buffer后面，否则添加到reply list
+        // 末尾的节点上(这里的if()逻辑和_addReplyToBuffer都尝试将reply追加到
+        // output buffer后面，只不过前者为了避免将reply编码成robj，判断的追加
+        // 条件相对后者苛刻，实际上剩余空间不一定要大于等于32才能存放一个long
+        // 类型的数字)
         if (listLength(c->reply) == 0 && (sizeof(c->buf) - c->bufpos) >= 32) {
             char buf[32];
             int len;
@@ -513,6 +527,10 @@ void addReplyLongLong(client *c, long long ll) {
 }
 
 void addReplyMultiBulkLen(client *c, long length) {
+    // 如果对应length长度的robj已经在redis初始化的
+    // 时候已经分配，那么直接使用shared robj追加
+    // 到client output buffer或者reply list末尾, 否
+    // 则尝试先编码再追加
     if (length < OBJ_SHARED_BULKHDR_LEN)
         addReply(c,shared.mbulkhdr[length]);
     else
@@ -523,6 +541,8 @@ void addReplyMultiBulkLen(client *c, long length) {
 void addReplyBulkLen(client *c, robj *obj) {
     size_t len;
 
+    // 如果robj的类型是OBJ_ENCODING_RAW或者OBJ_ENCODING_EMBSTR那么
+    // 则计算字符串sds的长度，否则计算整形数字占用的空间大小
     if (sdsEncodedObject(obj)) {
         len = sdslen(obj->ptr);
     } else {
@@ -1810,6 +1830,9 @@ void rewriteClientCommandArgument(client *c, int i, robj *newval) {
  * Note: this function is very fast so can be called as many time as
  * the caller wishes. The main usage of this function currently is
  * enforcing the client output length limits. */
+// c->reply_bytes存储的只是实际reply的大小，但是client的reply list是
+// 由一系列节点构成，每个节点会有一定的空间开销(前驱，后继和指向sds
+// 的指针), 并且还需要把sds的header算上(这里假设sds都是sdshdr16类型的)
 unsigned long getClientOutputBufferMemoryUsage(client *c) {
     unsigned long list_item_size = sizeof(listNode)+5;
     /* The +5 above means we assume an sds16 hdr, may not be true
@@ -1877,6 +1900,8 @@ int checkClientOutputBufferLimits(client *c) {
 
     /* We need to check if the soft limit is reached continuously for the
      * specified amount of seconds. */
+    // 如果output buffer大小超过soft_limit_bytes连续soft_limit_seconds秒才
+    // 真正的超出soft limit限制了
     if (soft) {
         if (c->obuf_soft_limit_reached_time == 0) {
             c->obuf_soft_limit_reached_time = server.unixtime;

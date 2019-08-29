@@ -626,9 +626,12 @@ sds getAbsolutePath(char *filename) {
     sds relpath = sdsnew(filename);
 
     relpath = sdstrim(relpath," \r\n\t");
+    // 如果传入的配置文件路径是绝对路径，直接返回
     if (relpath[0] == '/') return relpath; /* Path is already absolute. */
 
     /* If path is relative, join cwd and relative path. */
+    // 调用getcwd()获取当前工作目录的绝对路径, 如果失败释放
+    // relpath并且返回NULL
     if (getcwd(cwd,sizeof(cwd)) == NULL) {
         sdsfree(relpath);
         return NULL;
@@ -643,10 +646,15 @@ sds getAbsolutePath(char *filename) {
      *
      * For every "../" we find in the filename, we remove it and also remove
      * the last element of the cwd, unless the current cwd is "/". */
+    // 这里实际上就是将当前工作目录的绝对路径和配置文件的相对路径做一个整合
+    // 最终获取配置文件的绝对路径(其实这段代码只处理了../的情况，对于复杂的
+    // 相对路径还是无能为力的)
     while (sdslen(relpath) >= 3 &&
            relpath[0] == '.' && relpath[1] == '.' && relpath[2] == '/')
     {
+        // 相对路径去掉../
         sdsrange(relpath,3,-1);
+        // 绝对路径也回退一个层级
         if (sdslen(abspath) > 1) {
             char *p = abspath + sdslen(abspath)-2;
             int trimlen = 1;
@@ -660,6 +668,8 @@ sds getAbsolutePath(char *filename) {
     }
 
     /* Finally glue the two parts together. */
+    // 将修剪过了abspath和relpath拼接起来就是
+    // 配置文件的绝对路径
     abspath = sdscatsds(abspath,relpath);
     sdsfree(relpath);
     return abspath;
