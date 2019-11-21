@@ -122,7 +122,19 @@ void freeReplicationBacklog(void) {
 /* Add data to the replication backlog.
  * This function also increments the global replication offset stored at
  * server.master_repl_offset, because there is no case where we want to feed
- * the backlog without incrementing the offset. */
+ * the backlog without incrementing the offset.
+ * 实际上就是向ring buffer里面写东西，自己理解ring buffer的本质就是一个普通的buffer, 当这个
+ * buffer末尾被写满了之后，则新写入的数据会从buffer的起始位置进行覆盖，Redis中用repl_backlog_size
+ * 用来表示这个ring buffer的大小, repl_backlog_idx用来表示当前数据已经写到了什么位置，master_repl_offset
+ * 用来表示写入数据的总量, 通过repl_backlog_histlen可以计算出repl_backlog_off, 而[repl_backlog_off, master_repl_offset]
+ * 这个区间内就是ring buffer当前存储的有效数据
+ *
+ * eg...
+ * 假设repl_backlog_size 为10:
+ *      1. 写15字节，master_repl_offset = 15, repl_backlog_idx = 5, repl_backlog_histlen = 10, repl_backlog_off = 6, 有效数据区间为[6, 15]
+ *      2. 再写4字节, master_repl_offset = 19, repl_backlog_idx = 9, repl_backlog_histlen = 14, repl_backlog_off = 10, 有效区间为[10, 19]
+ *
+ */
 void feedReplicationBacklog(void *ptr, size_t len) {
     unsigned char *p = ptr;
 
@@ -239,13 +251,14 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
 
             /* We need to feed the buffer with the object as a bulk reply
              * not just as a plain string, so create the $..CRLF payload len
-             * and add the final CRLF */
+             * and add the final CRLF(CRLF指的就是\r\n) */
             aux[0] = '$';
             len = ll2string(aux+1,sizeof(aux)-1,objlen);
             aux[len+1] = '\r';
             aux[len+2] = '\n';
             feedReplicationBacklog(aux,len+3);
             feedReplicationBacklogWithObject(argv[j]);
+            // 这一句实际上就是追加一个\r\n, cao!
             feedReplicationBacklog(aux+len+1,2);
         }
     }

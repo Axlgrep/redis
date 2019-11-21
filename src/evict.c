@@ -54,6 +54,8 @@
 struct evictionPoolEntry {
     unsigned long long idle;    /* Object idle time (inverse frequency for LFU) */
     sds key;                    /* Key name. */
+    // cached在evictionPoolEntry构造的时候就会分配一个255字节的sds空间，
+    // 如果Key的大小小于255字节，就直接存放在cached当中，无需重新分配空间
     sds cached;                 /* Cached SDS object for key name. */
     int dbid;                   /* Key DB number. */
 };
@@ -159,12 +161,17 @@ void evictionPoolAlloc(void) {
  *
  * We insert keys on place in ascending order, so keys with the smaller
  * idle time are on the left, and keys with the higher idle time on the
- * right. */
+ * right
+ *
+ * pool实际上就是一个数组的形式，里面的元素按照idle大小递增，最左边的元素
+ * idle最小(淘汰优先级最小)，最右边的元素idle最大(淘汰优先级最大)
+ */
 
 void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evictionPoolEntry *pool) {
     int j, k, count;
     dictEntry *samples[server.maxmemory_samples];
 
+    /* 随机的从指定dict中获取一定数量的dictEnttry(默认是5个)放入samples数组中 */
     count = dictGetSomeKeys(sampledict,samples,server.maxmemory_samples);
     for (j = 0; j < count; j++) {
         unsigned long long idle;
@@ -201,7 +208,9 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
              * frequency of 255. */
             idle = 255-LFUDecrAndReturn(o);
         } else if (server.maxmemory_policy == MAXMEMORY_VOLATILE_TTL) {
-            /* In this case the sooner the expire the better. */
+            /* In this case the sooner the expire the better.
+             * 如果maxmemory_policy是MAXMEMORY_VOLATILE_TTL那么dictEntry中Value
+             * 存储的值一定的过期的timestamp */
             idle = ULLONG_MAX - (long)dictGetVal(de);
         } else {
             serverPanic("Unknown eviction policy in evictionPoolPopulate()");
@@ -209,23 +218,38 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
 
         /* Insert the element inside the pool.
          * First, find the first empty bucket or the first populated
-         * bucket that has an idle time smaller than our idle time. */
+         * bucket that has an idle time smaller than our idle time.
+         *
+         * 找到第一个空槽，或者是第一个idle小于当前object idle的槽
+         */
         k = 0;
         while (k < EVPOOL_SIZE &&
                pool[k].key &&
                pool[k].idle < idle) k++;
         if (k == 0 && pool[EVPOOL_SIZE-1].key != NULL) {
             /* Can't insert if the element is < the worst element we have
-             * and there are no empty buckets. */
+             * and there are no empty buckets.
+             *
+             * 如果第一个槽里元素的idle都比当前object idle要大，那么说明pool里面
+             * 所有object淘汰的优先级都比当前object要大，插入失败
+             */
             continue;
         } else if (k < EVPOOL_SIZE && pool[k].key == NULL) {
-            /* Inserting into empty position. No setup needed before insert. */
+            /* Inserting into empty position. No setup needed before insert.
+             *
+             * 如果当前插入位置对应的槽是空槽，则在插入之前无需做任何操作
+             */
         } else {
             /* Inserting in the middle. Now k points to the first element
              * greater than the element to insert.  */
             if (pool[EVPOOL_SIZE-1].key == NULL) {
                 /* Free space on the right? Insert at k shifting
-                 * all the elements from k to end to the right. */
+                 * all the elements from k to end to the right.
+                 *
+                 * 如果插入位置k位于数组中间并且数组最后一个槽为空，则将
+                 * k ~ EVPOOL_SIZE - 2区间槽的元素挪到k ~ EVPOOL_SIZE - 1
+                 * 的位置上
+                 */
 
                 /* Save SDS before overwriting. */
                 sds cached = pool[EVPOOL_SIZE-1].cached;
@@ -236,7 +260,13 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
                 /* No free space on right? Insert at k-1 */
                 k--;
                 /* Shift all elements on the left of k (included) to the
-                 * left, so we discard the element with smaller idle time. */
+                 * left, so we discard the element with smaller idle time.
+                 *
+                 * 走到这段逻辑说明当前object的idle比pool中所有object的idle都要大，
+                 * 这时候我们需要把pool[0]的元素抛弃掉(最左边的元素idle是最小的)
+                 * 然后把后面的object依次向前挪动一位，以便腾出pool最右边的槽用于
+                 * 存储当前object
+                 */
                 sds cached = pool[0].cached; /* Save SDS before overwriting. */
                 if (pool[0].key != pool[0].cached) sdsfree(pool[0].key);
                 memmove(pool,pool+1,sizeof(pool[0])*k);
@@ -378,6 +408,15 @@ size_t freeMemoryGetNotCountedMemory(void) {
     return overhead;
 }
 
+/*
+ * 在内存使用量超出maxmemory时，Redis提供了五种策略对内存进行回收
+ *
+ * 1. LRU:        使用Least Recently Used算法选出Key进行回收(分为在expire dict里选和在全局dict里选两种)
+ * 2. LFU:        使用Least Frequently Used算法选出Key进行回收(分为在expire dict里选和在全局dict里选两种)
+ * 3. RAMDOM:     使用随机算法选出Key进行回收(分为在expire dict里选和在全局dict里选两种)
+ * 4. TTL:        使用超时时间属性来选出最接近过期时间的Key进行回收
+ * 5. NOEVICTION: 不对Key进行回收
+ */
 int freeMemoryIfNeeded(void) {
     size_t mem_reported, mem_used, mem_tofree, mem_freed;
     mstime_t latency, eviction_latency;
@@ -390,7 +429,10 @@ int freeMemoryIfNeeded(void) {
     if (clientsArePaused()) return C_OK;
 
     /* Check if we are over the memory usage limit. If we are not, no need
-     * to subtract the slaves output buffers. We can just return ASAP. */
+     * to subtract the slaves output buffers. We can just return ASAP.
+     *
+     * 如果当前内存使用量比配置的maxmemory要小，则直接返回
+     */
     mem_reported = zmalloc_used_memory();
     if (mem_reported <= server.maxmemory) return C_OK;
 
@@ -400,13 +442,18 @@ int freeMemoryIfNeeded(void) {
     size_t overhead = freeMemoryGetNotCountedMemory();
     mem_used = (mem_used > overhead) ? mem_used-overhead : 0;
 
-    /* Check if we are still over the memory limit. */
+    /* Check if we are still over the memory limit.
+     *
+     * 如果当前内存使用量减去slave的output buffer和AOF buffer比maxmemory要小
+     * 了，那么直接返回
+     */
     if (mem_used <= server.maxmemory) return C_OK;
 
     /* Compute how much memory we need to free. */
     mem_tofree = mem_used - server.maxmemory;
     mem_freed = 0;
 
+    /* 如果当前内存使用量已经超了maxmemory，但是用户并没有配置回收策略(不允许回收Key) */
     if (server.maxmemory_policy == MAXMEMORY_NO_EVICTION)
         goto cant_free; /* We need to free memory, but policy forbids. */
 
@@ -420,6 +467,7 @@ int freeMemoryIfNeeded(void) {
         dict *dict;
         dictEntry *de;
 
+        /* 如果采用LRU, LFU, TTL策略走这里的逻辑 */
         if (server.maxmemory_policy & (MAXMEMORY_FLAG_LRU|MAXMEMORY_FLAG_LFU) ||
             server.maxmemory_policy == MAXMEMORY_VOLATILE_TTL)
         {
@@ -456,6 +504,8 @@ int freeMemoryIfNeeded(void) {
                     }
 
                     /* Remove the entry from the pool. */
+                    // key大于255字节，没有存放在cached当中，是新申请的
+                    // 内存空间，需要主动释放
                     if (pool[k].key != pool[k].cached)
                         sdsfree(pool[k].key);
                     pool[k].key = NULL;
@@ -473,7 +523,10 @@ int freeMemoryIfNeeded(void) {
             }
         }
 
-        /* volatile-random and allkeys-random policy */
+        /* volatile-random and allkeys-random policy
+         *
+         * 如果采用RANDOM算法走这里的逻辑
+         */
         else if (server.maxmemory_policy == MAXMEMORY_ALLKEYS_RANDOM ||
                  server.maxmemory_policy == MAXMEMORY_VOLATILE_RANDOM)
         {
@@ -498,6 +551,7 @@ int freeMemoryIfNeeded(void) {
         if (bestkey) {
             db = server.db+bestdbid;
             robj *keyobj = createStringObject(bestkey,sdslen(bestkey));
+            /* 这里是将删除Key的命令传播给AOF和所有的Slave */
             propagateExpire(db,keyobj,server.lazyfree_lazy_eviction);
             /* We compute the amount of memory freed by db*Delete() alone.
              * It is possible that actually the memory needed to propagate
@@ -508,6 +562,7 @@ int freeMemoryIfNeeded(void) {
              * AOF and Output buffer memory will be freed eventually so
              * we only care about memory used by the key space. */
             delta = (long long) zmalloc_used_memory();
+            // axl here
             latencyStartMonitor(eviction_latency);
             if (server.lazyfree_lazy_eviction)
                 dbAsyncDelete(db,keyobj);

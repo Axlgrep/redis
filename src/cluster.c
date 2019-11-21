@@ -636,7 +636,11 @@ void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
  *
  * However if the key contains the {...} pattern, only the part between
  * { and } is hashed. This may be useful in the future to force certain
- * keys to be in the same node (assuming no resharding is in progress). */
+ * keys to be in the same node (assuming no resharding is in progress).
+ *
+ * 这里是计算给定的key位于哪个hash slots当中，需要注意的是这里支持指定位于
+ * 花括号中的tag, 如果指定了tag，则根据tag来计算Hash值
+ */
 unsigned int keyHashSlot(char *key, int keylen) {
     int s, e; /* start-end indexes of { and } */
 

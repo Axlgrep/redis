@@ -2312,11 +2312,13 @@ int processCommand(client *c) {
     /* Now lookup the command and check ASAP about trivial error conditions
      * such as wrong arity, bad command name and so forth. */
     c->cmd = c->lastcmd = lookupCommand(c->argv[0]->ptr);
+    /* 没找到对应的命令，报错 */
     if (!c->cmd) {
         flagTransaction(c);
         addReplyErrorFormat(c,"unknown command '%s'",
             (char*)c->argv[0]->ptr);
         return C_OK;
+    /* 参数数量不合法，报错 */
     } else if ((c->cmd->arity > 0 && c->cmd->arity != c->argc) ||
                (c->argc < -c->cmd->arity)) {
         flagTransaction(c);
@@ -2326,6 +2328,7 @@ int processCommand(client *c) {
     }
 
     /* Check if the user is authenticated */
+    /* Redis设置了密码，客户端并不是验证态，当前命令也不是auth命令，报错 */
     if (server.requirepass && !c->authenticated && c->cmd->proc != authCommand)
     {
         flagTransaction(c);
@@ -2364,6 +2367,7 @@ int processCommand(client *c) {
      * First we try to free some memory if possible (if there are volatile
      * keys in the dataset). If there are not the only thing we can do
      * is returning an error. */
+    /* 如果配置文件中不做配置的话，maxmemory默认是0，也就是不对内存做限制 */
     if (server.maxmemory) {
         int retval = freeMemoryIfNeeded();
         /* freeMemoryIfNeeded may flush slave output buffers. This may result

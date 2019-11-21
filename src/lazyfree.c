@@ -53,19 +53,34 @@ size_t lazyfreeGetFreeEffort(robj *obj) {
 #define LAZYFREE_THRESHOLD 64
 int dbAsyncDelete(redisDb *db, robj *key) {
     /* Deleting an entry from the expires dict will not free the sds of
-     * the key, because it is shared with the main dictionary. */
+     * the key, because it is shared with the main dictionary.
+     *
+     * 这里只是删除db->expires中Key对应的Entry条目，但是并不会释放
+     * Entry中的Key对象(类型为SDS，和db->dict中对应Entry共享, 可以
+     * 看一下db->expires的构造方式keyptrDictType)
+     */
     if (dictSize(db->expires) > 0) dictDelete(db->expires,key->ptr);
 
     /* If the value is composed of a few allocations, to free in a lazy way
      * is actually just slower... So under a certain limit we just free
-     * the object synchronously. */
+     * the object synchronously.
+     *
+     * dictDelete和dictUnlink的区别是前者不仅会把dict中对应的Entry删除, 还
+     * 会释放Entry以及Entry中Key, Value所占用的内存空间，而后者仅仅是将Entry
+     * 从dict中删除并不实际释放Entry占用的内存空间(但是这个方法会返回Entry的
+     * 指针)
+     */
     dictEntry *de = dictUnlink(db->dict,key->ptr);
     if (de) {
         robj *val = dictGetVal(de);
         size_t free_effort = lazyfreeGetFreeEffort(val);
 
         /* If releasing the object is too much work, let's put it into the
-         * lazy free list. */
+         * lazy free list.
+         *
+         * 如果value中存在的元素太多，则将value放到另外一个线程异步
+         * 删除，避免阻塞主线程
+         */
         if (free_effort > LAZYFREE_THRESHOLD) {
             atomicIncr(lazyfree_objects,1);
             bioCreateBackgroundJob(BIO_LAZY_FREE,val,NULL,NULL);
@@ -74,7 +89,13 @@ int dbAsyncDelete(redisDb *db, robj *key) {
     }
 
     /* Release the key-val pair, or just the key if we set the val
-     * field to NULL in order to lazy free it later. */
+     * field to NULL in order to lazy free it later.
+     *
+     * 其实可以看到这个方法虽然是叫dbAsyncDelete, 但是这个Async实际上
+     * 是指的value, 因为在bigkey的场景下value中可能存放很多东西，在主
+     * 线程进行释放回收内存的话会阻塞客户端请求，而Entry和Entry中key
+     * 对象都是在主线程回收的
+     */
     if (de) {
         dictFreeUnlinkedEntry(db->dict,de);
         if (server.cluster_enabled) slotToKeyDel(key);

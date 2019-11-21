@@ -121,14 +121,19 @@ void aofChildWriteDiffData(aeEventLoop *el, int fd, void *privdata, int mask) {
     }
 }
 
-/* Append data to the AOF rewrite buffer, allocating new blocks if needed. */
+/* Append data to the AOF rewrite buffer, allocating new blocks if needed.
+ * 在AOF重写期间，Redis内部维护一个有aofrwblock构成的链表用于存储在AOF重写
+ * 期间引起数据库数据变化的一系列命令(每个aofrwblock可以存储10MB的数据)
+ */
 void aofRewriteBufferAppend(unsigned char *s, unsigned long len) {
     listNode *ln = listLast(server.aof_rewrite_buf_blocks);
     aofrwblock *block = ln ? ln->value : NULL;
 
     while(len) {
         /* If we already got at least an allocated block, try appending
-         * at least some piece into it. */
+         * at least some piece into it.
+         * 尽可能的使用上一个Block的剩余空间
+         */
         if (block) {
             unsigned long thislen = (block->free < len) ? block->free : len;
             if (thislen) {  /* The current block is not already full. */
@@ -478,7 +483,11 @@ sds catAppendOnlyGenericCommand(sds dst, int argc, robj **argv) {
  *
  * This command is used in order to translate EXPIRE and PEXPIRE commands
  * into PEXPIREAT command so that we retain precision in the append only
- * file, and the time is always absolute and not relative. */
+ * file, and the time is always absolute and not relative.
+ *
+ * 将EXPIRE, SETEX, EXPIREAT, PEXPIRE, PSETEX命令转换成PEXPIREAT命令形式
+ * 追加到buf后面
+ */
 sds catAppendOnlyExpireAtCommand(sds buf, struct redisCommand *cmd, robj *key, robj *seconds) {
     long long when;
     robj *argv[3];
@@ -529,7 +538,12 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
         /* Translate EXPIRE/PEXPIRE/EXPIREAT into PEXPIREAT */
         buf = catAppendOnlyExpireAtCommand(buf,cmd,argv[1],argv[2]);
     } else if (cmd->proc == setexCommand || cmd->proc == psetexCommand) {
-        /* Translate SETEX/PSETEX to SET and PEXPIREAT */
+        /* Translate SETEX/PSETEX to SET and PEXPIREAT
+         *
+         * 将SETEX/PSETEX命令转换成两条命令(SET/PEXPIREAT)追加到buf后(Pika
+         * 由于本身架构的原因将这个命令直接转换成了PKSETEXAT命令作为Binlog
+         * 保存)
+         */
         tmpargv[0] = createStringObject("SET",3);
         tmpargv[1] = argv[1];
         tmpargv[2] = argv[3];
@@ -539,7 +553,11 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
     } else if (cmd->proc == setCommand && argc > 3) {
         int i;
         robj *exarg = NULL, *pxarg = NULL;
-        /* Translate SET [EX seconds][PX milliseconds] to SET and PEXPIREAT */
+        /* Translate SET [EX seconds][PX milliseconds] to SET and PEXPIREAT
+         *
+         * SET [EX seconds][PX milliseconds]这种命令落到AOF实际上也是转换成
+         * 了SET Key Value 和 PEXPIREAT Key when这两条命令
+         */
         buf = catAppendOnlyGenericCommand(buf,3,argv);
         for (i = 3; i < argc; i ++) {
             if (!strcasecmp(argv[i]->ptr, "ex")) exarg = argv[i+1];
@@ -555,13 +573,19 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
     } else {
         /* All the other commands don't need translation or need the
          * same translation already operated in the command vector
-         * for the replication itself. */
+         * for the replication itself.
+         *
+         * 其它命令无需做转换，直接把命令转换成Redis协议形式的buf
+         */
         buf = catAppendOnlyGenericCommand(buf,argc,argv);
     }
 
     /* Append to the AOF buffer. This will be flushed on disk just before
      * of re-entering the event loop, so before the client will get a
-     * positive reply about the operation performed. */
+     * positive reply about the operation performed.
+     *
+     * 将前面生成的buf追加到aof_buf的末尾
+     */
     if (server.aof_state == AOF_ON)
         server.aof_buf = sdscatlen(server.aof_buf,buf,sdslen(buf));
 

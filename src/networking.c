@@ -1393,6 +1393,8 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
 
     qblen = sdslen(c->querybuf);
     if (c->querybuf_peak < qblen) c->querybuf_peak = qblen;
+    // 这里是希望对querybuf做扩容操作，如果剩余空间大于readlen
+    // 则内部不做什么事情
     c->querybuf = sdsMakeRoomFor(c->querybuf, readlen);
     nread = read(fd, c->querybuf+qblen, readlen);
     if (nread == -1) {
@@ -1415,6 +1417,8 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
                                         c->querybuf+qblen,nread);
     }
 
+    // 已经从socket中读取了nread字节的内容追加到querybuf后
+    // 需要更新一下sds头部的长度信息
     sdsIncrLen(c->querybuf,nread);
     c->lastinteraction = server.unixtime;
     if (c->flags & CLIENT_MASTER) c->read_reploff += nread;
@@ -1994,7 +1998,11 @@ void pauseClients(mstime_t end) {
 }
 
 /* Return non-zero if clients are currently paused. As a side effect the
- * function checks if the pause time was reached and clear it. */
+ * function checks if the pause time was reached and clear it.
+ *
+ * 先检查当前是不是有客户端停顿标记，如果有再检查是否符合取消
+ * 停顿标记(停顿时间已经过了), 符合的话就取消停顿标记
+ */
 int clientsArePaused(void) {
     if (server.clients_paused &&
         server.clients_pause_end_time < server.mstime)

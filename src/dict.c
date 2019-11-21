@@ -385,9 +385,16 @@ dictEntry *dictAddOrFind(dict *d, void *key) {
 /* Search and remove an element. This is an helper function for
  * dictDelete() and dictUnlink(), please check the top comment
  * of those functions.
+ *
  * 从dict里面删除指定Key的Entry, 如果找不到则返回NULL, 否则返回该
- * Entry的指针, 需要注意的是，如果nofree为0，那么返回的可能是一个
- * 野指针?
+ * Entry的指针.
+ *
+ * nofree为0的场景: 不仅将key对应的Entry从dict中删除掉，还释放key(sds对象)
+ * 以及对应value(robj对象), 以及Entry对象本身, 这时候返回的Entry对象指针是
+ * 野指针，需要注意
+ *
+ * nofree为1的场景: 将key对应的Entry从dict中删除, 并不实际释放Entry对象
+ * 而是将Entry对象的指针返回
  */
 static dictEntry *dictGenericDelete(dict *d, const void *key, int nofree) {
     unsigned int h, idx;
@@ -719,6 +726,8 @@ unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count) {
             break;
     }
 
+    // 由于Redis的dict可以扩容也可以缩容，所以第一个hashtable
+    // 的sizemask不一定比第二个要小
     tables = dictIsRehashing(d) ? 2 : 1;
     maxsizemask = d->ht[0].sizemask;
     if (tables > 1 && maxsizemask < d->ht[1].sizemask)
