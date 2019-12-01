@@ -205,7 +205,6 @@ int dictExpand(dict *d, unsigned long size)
  * 再将其从ht[0]上删除, 最后判断ht[0]上的元素是否完全迁移完毕, 如果是，则
  * 释放原先ht[0]的hashtable, 然后令ht[0]指向ht[1]的hashtable并且重置ht[1]，
  * 最后令rehashidx为-1, 标志着当前没有rehash操作
- *
  */
 int dictRehash(dict *d, int n) {
     int empty_visits = n*10; /* Max number of empty buckets to visit. */

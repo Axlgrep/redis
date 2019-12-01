@@ -582,13 +582,16 @@ typedef struct RedisModuleDigest {
 
 #define OBJ_SHARED_REFCOUNT INT_MAX
 typedef struct redisObject {
-    unsigned type:4;
-    unsigned encoding:4;
-    unsigned lru:LRU_BITS; /* LRU time (relative to global lru_clock) or
+    unsigned type:4;       // RedisObject的类型
+    unsigned encoding:4;   // 同一种类型的RedisObject数据有不同的编码形式
+    unsigned lru:LRU_BITS; /* 记录RedisObject访问时间信息，在Redis设置了内
+                            * 存上限限制之后会根据该属性来回收redisObject
+                            * 从而达到释放内存的效果
+                            * LRU time (relative to global lru_clock) or
                             * LFU data (least significant 8 bits frequency
                             * and most significant 16 bits decreas time). */
-    int refcount;
-    void *ptr;
+    int refcount;           // 引用计数，在Redis中同一个RedisObject可能被多个地方共用
+    void *ptr;              // 指向底层实现数据结构的指针
 } robj;
 
 /* Macro used to initialize a Redis object allocated on the stack.

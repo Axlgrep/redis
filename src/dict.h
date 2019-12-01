@@ -56,28 +56,30 @@ typedef struct dictEntry {
 } dictEntry;
 
 typedef struct dictType {
-    uint64_t (*hashFunction)(const void *key);
-    void *(*keyDup)(void *privdata, const void *key);
-    void *(*valDup)(void *privdata, const void *obj);
-    int (*keyCompare)(void *privdata, const void *key1, const void *key2);
-    void (*keyDestructor)(void *privdata, void *key);
-    void (*valDestructor)(void *privdata, void *obj);
+    uint64_t (*hashFunction)(const void *key);         // 字典作用于键的Hash函数指针
+    void *(*keyDup)(void *privdata, const void *key);  // 字典键复制函数指针
+    void *(*valDup)(void *privdata, const void *obj);  // 字典值复制函数指针
+    int (*keyCompare)(void *privdata, const void *key1, const void *key2); //字典键比较函数指针
+    void (*keyDestructor)(void *privdata, void *key);  // 字典键销毁函数指针
+    void (*valDestructor)(void *privdata, void *obj);  // 字典值销毁函数指针
 } dictType;
 
 /* This is our hash table structure. Every dictionary has two of this as we
  * implement incremental rehashing, for the old to the new table. */
 typedef struct dictht {
-    dictEntry **table;
-    unsigned long size;
-    unsigned long sizemask;
-    unsigned long used;
+    dictEntry **table;      // HashTable数组
+    unsigned long size;     // HashTable的大小
+    unsigned long sizemask; // HashTable大小掩码，总是等于size - 1, 通常用来计算索引
+    unsigned long used;     // 已经使用的节点数，实际上就是HashTable中已经存在的dictEntry数量
 } dictht;
 
 typedef struct dict {
-    dictType *type;
-    void *privdata;
-    dictht ht[2];
-    long rehashidx; /* rehashing not in progress if rehashidx == -1 */
+    dictType *type;   // 字典键值相关方法集合的指针
+    void *privdata;   // 指向字典私有数据的指针，暂时还没发现哪个地方用到
+    dictht ht[2];     // 字典内部的两个Hash表
+    long rehashidx;   /* rehashing not in progress if rehashidx == -1
+                         如果当前没有在执行rehash操作，那么rehashidx为-1,
+                         否则就是ht[0]上正在rehash的索引信息*/
     unsigned long iterators; /* number of iterators currently running */
 } dict;
 

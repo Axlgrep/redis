@@ -99,10 +99,10 @@ static inline char sdsReqType(size_t string_size) {
  *                                      s
  *
  * Type SDS_TYPE_16 SDS:
- *    |------------------------- sdshdr16 -------------------------|----------- buf[] -----------|
- *    |   <Len>   |  <Alloc>  |  <Flags::length>  |  <Flags::type> |    <String>   | <Tail Char> |
- *    |  2 Bytes  |  2 Bytes  |       5 Bits      |     3 Bits     |   2^10 Bytes  |   1 Bytes   |
- *    |    2^10   |    2^10   |       unused      |   SDS_TYPE_16  |    Xxx..axl   |     \0      |
+ *    |------------------------- sdshdr16 -------------------------|-----------------------  buf[] -----------------------|
+ *    |   <Len>   |  <Alloc>  |  <Flags::length>  |  <Flags::type> |    <String>   | <Tail Char> |       <Free buf>       |
+ *    |  2 Bytes  |  2 Bytes  |       5 Bits      |     3 Bits     |   2^10 Bytes  |   1 Bytes   |  2^12 - 2^10 - 1 Bytes |
+ *    |    2^10   |    2^12   |       unused      |   SDS_TYPE_16  |    Xxx..axl   |     \0      |                        |
  *                                                                 ^
  *                                                                 s
  */

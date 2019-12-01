@@ -1171,6 +1171,10 @@ int processMultibulkBuffer(client *c) {
     int pos = 0, ok;
     long long ll;
 
+    /* 当前client的multibulklen属性为0，表明现在需要开始解析一条全新
+     * 的Redis命令，需要先获取这条命令的字段个数, 若multibulcklen字段
+     * 不为0，表示上一次解析命令操作还没有完成，需要继续解析
+     */
     if (c->multibulklen == 0) {
         /* The client should have been reset */
         serverAssertWithInfo(c,NULL,c->argc == 0);
@@ -1180,12 +1184,21 @@ int processMultibulkBuffer(client *c) {
         if (newline == NULL) {
             if (sdslen(c->querybuf) > PROTO_INLINE_MAX_SIZE) {
                 addReplyError(c,"Protocol error: too big mbulk count string");
+                /* 设置ProtocolError之后会将client中的flags设置CLIENT_CLOSE_AFTER_REPLY
+                 * 标志位，等待关闭连接
+                 */
                 setProtocolError("too big mbulk count string",c,0);
             }
+            /* 若协议没有异常，返回C_ERR下次会继续读取socket中的内容再次尝试解析 */
             return C_ERR;
         }
 
-        /* Buffer should also contain \n */
+        /* Buffer should also contain \n
+         * newline只是获取到了multibulklen中'\r'的位置，但是一个完整的multibulklen
+         * 我们还需要把'\r'后面的'\n'也解析完毕才算完成，所以当当前querybuf内的内容
+         * 还不能凑成一个完整的multibulklen, 我们返回C_ERR, 等待从socket里面获取更多
+         * 内容，再尝试重新解析(下面解析bulklen和bulk argument也是同理)
+         */
         if (newline-(c->querybuf) > ((signed)sdslen(c->querybuf)-2))
             return C_ERR;
 
@@ -1193,6 +1206,7 @@ int processMultibulkBuffer(client *c) {
          * so go ahead and find out the multi bulk length. */
         serverAssertWithInfo(c,NULL,c->querybuf[0] == '*');
         ok = string2ll(c->querybuf+1,newline-(c->querybuf+1),&ll);
+        /* 一个命令字段个数加起来不能超过1024*1024个 */
         if (!ok || ll > 1024*1024) {
             addReplyError(c,"Protocol error: invalid multibulk length");
             setProtocolError("invalid mbulk count",c,pos);
@@ -1207,12 +1221,18 @@ int processMultibulkBuffer(client *c) {
 
         c->multibulklen = ll;
 
-        /* Setup argv array on client structure */
+        /* Setup argv array on client structure
+         * 该条命令总共有multibulklen个字段，我们先释放前一条命令
+         * 指向字段的指针数组(由于解析到一个新的multibulklen，说明
+         * 前一条命令已经完全处理完毕, 可以安全释放), 然后创建该条
+         * 命令所需的指针数组
+         */
         if (c->argv) zfree(c->argv);
         c->argv = zmalloc(sizeof(robj*)*c->multibulklen);
     }
 
     serverAssertWithInfo(c,NULL,c->multibulklen > 0);
+    /* 解析当前命令multibulklen个字段 */
     while(c->multibulklen) {
         /* Read bulk length if unknown */
         if (c->bulklen == -1) {
@@ -1239,6 +1259,7 @@ int processMultibulkBuffer(client *c) {
                 return C_ERR;
             }
 
+            /* 一个bulk argument的大小不能超过512MB */
             ok = string2ll(c->querybuf+pos+1,newline-(c->querybuf+pos+1),&ll);
             if (!ok || ll < 0 || ll > 512*1024*1024) {
                 addReplyError(c,"Protocol error: invalid bulk length");
@@ -1247,6 +1268,11 @@ int processMultibulkBuffer(client *c) {
             }
 
             pos += newline-(c->querybuf+pos)+2;
+            /* 如果当前读取的字段大于32kb, 那么将当前字段相关内容
+             * 放置到querybuf的前端，并且还会判断当前querybuf是否
+             * 完成存储下了当前字段，若没有，则会分配额外的空间确
+             * 保可以容纳当前字段
+             */
             if (ll >= PROTO_MBULK_BIG_ARG) {
                 size_t qblen;
 
@@ -1272,7 +1298,17 @@ int processMultibulkBuffer(client *c) {
         } else {
             /* Optimization: if the buffer contains JUST our bulk element
              * instead of creating a new object by *copying* the sds we
-             * just use the current sds string. */
+             * just use the current sds string.
+             *
+             * 这里的优化是和上面相配合的，我们知道，命令的每个字段我们都是
+             * 用一个OBJ_STRING类型的robj进行存储的，这个robj内部会指向一个
+             * 新创建的sds对象, 而这个sds对象的内容是由querybuf拷贝而来, 而
+             * querybuf本身也是sds对象，所以当querybuf中正好完整的存储了当前
+             * 命令字段时，我们可以直接让robj指向这个querybuf, 而我们再重新
+             * 分配一段内存空间供querybuf使用(这样做的好处是避免了一次昂贵的
+             * 内存拷贝, 况且已经从querybuf中解析出来字段之后, querybuf中该
+             * 字段的相关内容也就无效了, 最终也会被清除)
+             */
             if (pos == 0 &&
                 c->bulklen >= PROTO_MBULK_BIG_ARG &&
                 (signed) sdslen(c->querybuf) == c->bulklen+2)
@@ -1294,7 +1330,13 @@ int processMultibulkBuffer(client *c) {
         }
     }
 
-    /* Trim to pos */
+    /* Trim to pos
+     * 解析完一个完整的命令之后需要将querybuf中当前
+     * 命令的内容清除(实际上就是调用memmove函数，将
+     * querybuf后面的内容挪到前面来，然后重新设置sds
+     * 的长度, 这样querybuf就能腾出空间来存放接下来
+     * 的数据了
+     */
     if (pos) sdsrange(c->querybuf,pos,-1);
 
     /* We're done when c->multibulk == 0 */
@@ -1334,6 +1376,11 @@ void processInputBuffer(client *c) {
             }
         }
 
+        /* 拿multibulkBuffer来说，如果一个完整的Redis命令没有解析
+         * 完成，那么会直接break掉, 而不会走到下面的processCommand(c)
+         * 方法，直到接下来再从socket里面读取内容，可以解析成一套完整
+         * 的命令位置
+         */
         if (c->reqtype == PROTO_REQ_INLINE) {
             if (processInlineBuffer(c) != C_OK) break;
         } else if (c->reqtype == PROTO_REQ_MULTIBULK) {
