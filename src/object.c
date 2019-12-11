@@ -106,8 +106,8 @@ robj *createEmbeddedStringObject(const char *ptr, size_t len) {
         o->lru = LRU_CLOCK();
     }
 
-    sh->len = len;
-    sh->alloc = len;
+    sh->len = len;                                            // 为sds分配存储字符串的空间和字符串的长度相同
+    sh->alloc = len;                                          // 所以这个SDS不允许修改操作
     sh->flags = SDS_TYPE_8;
     if (ptr) {
         memcpy(sh->buf,ptr,len);
@@ -558,6 +558,9 @@ size_t stringObjectLen(robj *o) {
     }
 }
 
+/*
+ * 从String类型的RedisObject中获取double类型数据
+ */
 int getDoubleFromObject(const robj *o, double *target) {
     double value;
     char *eptr;

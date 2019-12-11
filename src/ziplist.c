@@ -216,6 +216,19 @@
  * 0001 and 1101. */
 #define ZIP_INT_IMM_MASK 0x0f   /* Mask to extract the 4 bits value. To add
                                    one is needed to reconstruct the value. */
+
+/* 为什么编码类型是ZIP_INT_IMM_MIN的取值范围只能是[0, 12]:
+ *   由于ZipList末尾一字节的标记位内部存储的总是0xFF, 这是
+ *   为了避免和末尾标记位混淆
+ *
+ *   ZipList末尾标记位:                    11111111
+ *
+ *   当存储0的场景 : 11110001 + 00000000 = 11110001
+ *   当存储1的场景 : 11110001 + 00000001 = 11110010
+ *   当存储2的场景 : 11110001 + 00000010 = 11110011
+ *   ...
+ *   当存储12的场景: 11110001 + 00001100 = 11111101
+ */
 #define ZIP_INT_IMM_MIN 0xf1    /* 11110001 */
 #define ZIP_INT_IMM_MAX 0xfd    /* 11111101 */
 
@@ -527,16 +540,16 @@ int zipTryEncoding(unsigned char *entry, unsigned int entrylen, long long *v, un
          * of our encoding types that can hold this value. */
         if (value >= 0 && value <= 12) {
             *encoding = ZIP_INT_IMM_MIN+value;
-        } else if (value >= INT8_MIN && value <= INT8_MAX) {      // (2^8 <= value <= 2^7 - 1)  ---> (-128 <= value <= 127)
+        } else if (value >= INT8_MIN && value <= INT8_MAX) {      // [-2^7,  2^7)
             *encoding = ZIP_INT_8B;
-        } else if (value >= INT16_MIN && value <= INT16_MAX) {    //  2^16 <= value <= 2^15 - 1
+        } else if (value >= INT16_MIN && value <= INT16_MAX) {    // [-2^15, 2^15)
             *encoding = ZIP_INT_16B;
-        } else if (value >= INT24_MIN && value <= INT24_MAX) {    //  2^24 <= value <= 2^24 - 1
+        } else if (value >= INT24_MIN && value <= INT24_MAX) {    // [-2^23, 2^23)
             *encoding = ZIP_INT_24B;
-        } else if (value >= INT32_MIN && value <= INT32_MAX) {    //  2^32 <= value <= 2^32 - 1
+        } else if (value >= INT32_MIN && value <= INT32_MAX) {    // [-2^31, 2^31)
             *encoding = ZIP_INT_32B;
         } else {
-            *encoding = ZIP_INT_64B;
+            *encoding = ZIP_INT_64B;                              // [-2^63, 2^53)
         }
         *v = value;
         return 1;
@@ -818,9 +831,11 @@ unsigned char *__ziplistInsert(unsigned char *zl, unsigned char *p, unsigned cha
     }
 
     /* See if the entry can be encoded
-     * 如果可以编码成整形数，则返回该整形数的编码形式
-     * 否则就按照字符串进行存储，所需字节数就是字符串
-     * 的长度
+     * 如果该字符串可以被转换成长整型，那么我们转换成
+     * 整型在ZipListEntry中进行存储(这样的好处是节省空
+     * 间), 如果不能被转换成长整型(本身就是字符串或者
+     * 是浮点类型), 那么就只能以字符串的形式进行存储，
+     * 存储所需的长度就是字符串的长度
      */
     if (zipTryEncoding(s,slen,&value,&encoding)) {
         /* 'encoding' is set to the appropriate integer encoding
@@ -843,34 +858,71 @@ unsigned char *__ziplistInsert(unsigned char *zl, unsigned char *p, unsigned cha
 
     /* When the insert position is not equal to the tail, we need to
      * make sure that the next entry can hold this entry's length in
-     * its prevlen field. */
+     * its prevlen field.
+     * 当插入位置不是末尾的时候，需要考虑后继结点用于存储前驱结点长度
+     * 的空间是否足够
+     */
     int forcelarge = 0;
     nextdiff = (p[0] != ZIP_END) ? zipPrevLenByteDiff(p,reqlen) : 0;
-    // 如果p所指向结点当前PreviousEntryLength字段占用了5 Bytes
-    // 但是在此插入了新的结点之后p所指向结点PreviousEntryLength字段
-    // 只需占用1 Bytes
+    /* 如果p所指向结点当前PreviousEntryLength字段占用了5 Bytes
+     * 但是在此插入了新的结点之后p所指向结点PreviousEntryLength字段
+     * 只需占用1 Bytes
+     *
+     * 这里分四种情况:
+     *       新前驱占用1 Byte  旧前驱占用1 Byte   nextdiff =  0
+     *       新前驱占用5 Bytes 旧前驱占用5 Bytes  nextdiff =  0
+     *       新前驱占用5 Bytes 旧前驱占用1 Byte   nextdiff =  4
+     *       新前驱占用1 Byte  旧前驱占用5 Bytes  nextdiff = -4
+     *
+     * forcelarge的意思应该是就算只需要1 Byte来存储新前驱的体积，
+     * 但是由于之前存储旧前驱分配了5 Bytes，这时候就直接用5 Bytes
+     * 来存1 Byte就能存下的内容，这就是forcelarge...
+     *
+     * __ziplistCascadeUpdate
+     * 由于前驱发生变化，导致自身prevlen需要分配更多空间才能进行存储, 这
+     * 又导致自身的体积发生变化，从而后面的Entry都引起连锁反应, 这样会导
+     * 致多次向操作系统分配内存, 所以在Redis中prevlen的体积只增不减，尽量
+     * 避免内存的重分配, 具体可以看__ziplistCascadeUpdate的注释，说得非常
+     * 清楚了
+     */
     if (nextdiff == -4 && reqlen < 4) {
         nextdiff = 0;
         forcelarge = 1;
     }
 
-    /* Store offset because a realloc may change the address of zl. */
+    /* Store offset because a realloc may change the address of zl.
+     * 计算一下当前插入位置举例表头的偏移量，因为重新分配内存可能会
+     * 导致之前的指针是野指针, 重新分配内存的大小为当前ziplist的体积
+     * 加上当前插入结点的体积再加上新结点后继由于前驱发生变化导致自身
+     * 存储新前驱大小所需空间发生的变化差值
+     */
     offset = p-zl;
     zl = ziplistResize(zl,curlen+reqlen+nextdiff);
     p = zl+offset;
 
-    /* Apply memory move when necessary and update tail offset. */
+    /* Apply memory move when necessary and update tail offset.
+     * 如果当前插入位置不是表尾，需要将当前插入位置后续结点都向后挪动
+     */
     if (p[0] != ZIP_END) {
-        /* Subtract one because of the ZIP_END bytes */
+        /* Subtract one because of the ZIP_END bytes
+         * 假设插入Entry会导致后继prevlen所需空间增加, 存储之前前驱
+         * 只需要1 Byte, 但是存储这个新前驱需要4 Bytes, 那么我们在向
+         * 后挪动时将对应的内容向后多挪动4 Bytes的空间以便可以存储新
+         * 的prevlen
+         */
         memmove(p+reqlen,p-nextdiff,curlen-offset-1+nextdiff);
 
         /* Encode this entry's raw length in the next entry. */
         if (forcelarge)
+            /* 上面提到了forcelarge是用5 Bytes存 1 Byte就能存下的内容
+             * 所以这里要直接调用zipStorePrevEntryLengthLarge方法, 如
+             * 果调用zipStorePrevEntryLength那还是会以1 Byte来存 */
             zipStorePrevEntryLengthLarge(p+reqlen,reqlen);
         else
             zipStorePrevEntryLength(p+reqlen,reqlen);
 
-        /* Update offset for tail */
+        /* Update offset for tail
+         * 新的尾部结点等于之前尾部结点的位置 + 当前插入Entry体积的偏移量 */
         ZIPLIST_TAIL_OFFSET(zl) =
             intrev32ifbe(intrev32ifbe(ZIPLIST_TAIL_OFFSET(zl))+reqlen);
 
@@ -890,7 +942,10 @@ unsigned char *__ziplistInsert(unsigned char *zl, unsigned char *p, unsigned cha
     }
 
     /* When nextdiff != 0, the raw length of the next entry has changed, so
-     * we need to cascade the update throughout the ziplist */
+     * we need to cascade the update throughout the ziplist
+     * 由于插入结点导致后继prevlen所需空间增大, 这时候后继本身体积也会增大,
+     * 这就导致后后继的prevlen所需空间也有增大的可能性，引起了连锁反应
+     */
     if (nextdiff != 0) {
         offset = p-zl;
         zl = __ziplistCascadeUpdate(zl,p+reqlen);

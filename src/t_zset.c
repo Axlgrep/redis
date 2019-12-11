@@ -55,7 +55,6 @@
  * c) there is a back pointer, so it's a doubly linked list with the back
  * pointers being only at "level 1". This allows to traverse the list
  * from tail to head, useful for ZREVRANGE. */
-
 #include "server.h"
 #include <math.h>
 
@@ -979,6 +978,7 @@ unsigned char *zzlInsertAt(unsigned char *zl, unsigned char *eptr, sds ele, doub
     int scorelen;
     size_t offset;
 
+    /* 这里先把double类型转换成了字符串类型 */
     scorelen = d2string(scorebuf,sizeof(scorebuf),score);
     if (eptr == NULL) {
         zl = ziplistPush(zl,(unsigned char*)ele,sdslen(ele),ZIPLIST_TAIL);
@@ -1027,6 +1027,7 @@ unsigned char *zzlInsert(unsigned char *zl, sds ele, double score) {
 
     /* Push on tail of list when it was not yet inserted. */
     if (eptr == NULL)
+        /* 第二个参数为NULL表示插入到ZipList末尾 */
         zl = zzlInsertAt(zl,NULL,ele,score);
     return zl;
 }
@@ -1500,7 +1501,11 @@ void zaddGenericCommand(client *c, int flags) {
                            options like XX. */
 
     /* Parse options. At the end 'scoreidx' is set to the argument position
-     * of the score of the first score-element pair. */
+     * of the score of the first score-element pair.
+     * 一直以为这里存在注入的问题(member的值为nx或者xx等等这些特殊值), 实际上
+     * 是不存在的, 因为只有当前字段为nx, xx, ch, incr之一的时候循环才会持续，
+     * 否则就直接break了...
+     */
     scoreidx = 2;
     while(scoreidx < c->argc) {
         char *opt = c->argv[scoreidx]->ptr;
@@ -1519,7 +1524,11 @@ void zaddGenericCommand(client *c, int flags) {
     int ch = (flags & ZADD_CH) != 0;
 
     /* After the options, we expect to have an even number of args, since
-     * we expect any number of score-element pairs. */
+     * we expect any number of score-element pairs.
+     * zadd命令可能存在很多对score/member，而此时scoreidx指向第一对score/member
+     * 中的score, 下面elements变量记录当前命令中score, member的总个数, 由于
+     * score/member是成对出现的，理论上elements应该是偶数, 并且不应该为0
+     */
     elements = c->argc-scoreidx;
     if (elements % 2 || !elements) {
         addReply(c,shared.syntaxerr);
@@ -1527,13 +1536,18 @@ void zaddGenericCommand(client *c, int flags) {
     }
     elements /= 2; /* Now this holds the number of score-element pairs. */
 
-    /* Check for incompatible options. */
+    /* Check for incompatible options.
+     * xx表示只更新已经存在的member
+     * nx表示不更新已存在的member，只新增member
+     * 两者是冲突的，如果共同存在，直接报错返回
+     */
     if (nx && xx) {
         addReplyError(c,
             "XX and NX options at the same time are not compatible");
         return;
     }
 
+    /* 在存在incr参数的情况下，只允许出现一对score/member */
     if (incr && elements > 1) {
         addReplyError(c,
             "INCR option supports a single increment-element pair");
@@ -1542,7 +1556,9 @@ void zaddGenericCommand(client *c, int flags) {
 
     /* Start parsing all the scores, we need to emit any syntax error
      * before executing additions to the sorted set, as the command should
-     * either execute fully or nothing at all. */
+     * either execute fully or nothing at all.
+     * 在这里我们先将该ZADD命令的score解析出来，确保没有问题
+     */
     scores = zmalloc(sizeof(double)*elements);
     for (j = 0; j < elements; j++) {
         if (getDoubleFromObjectOrReply(c,c->argv[scoreidx+j*2],&scores[j],NULL)
@@ -1553,6 +1569,10 @@ void zaddGenericCommand(client *c, int flags) {
     zobj = lookupKeyWrite(c->db,key);
     if (zobj == NULL) {
         if (xx) goto reply_to_client; /* No key + XX option: nothing to do. */
+        /* 如果zset的ziplist不允许存储任何节点或者第一个member就大于ziplist
+         * 单个节点存储value的最大值, 那么我们直接创建字典 + 跳表作为该zset
+         * 底层存储数据的数据结构，否则创建ZipList
+         */
         if (server.zset_max_ziplist_entries == 0 ||
             server.zset_max_ziplist_value < sdslen(c->argv[scoreidx+1]->ptr))
         {
@@ -1562,6 +1582,7 @@ void zaddGenericCommand(client *c, int flags) {
         }
         dbAdd(c->db,key,zobj);
     } else {
+        /* 如果当前获取到的zobj类型并不是ZSET，则直接报错 */
         if (zobj->type != OBJ_ZSET) {
             addReply(c,shared.wrongtypeerr);
             goto cleanup;
@@ -1574,6 +1595,12 @@ void zaddGenericCommand(client *c, int flags) {
         int retflags = flags;
 
         ele = c->argv[scoreidx+1+j*2]->ptr;
+        /* 在执行带有incr参数的zadd命令时，向用户返回incr后的score值
+         * 所以在这里zsetAdd方法中把newscore的指针传递进去了
+         * 另外为了传参的简介，这里把nx,xx,ch,incr压缩到retflags传入
+         * 到zsetAdd方法当中，另外函数返回时retflags会带上另外的response
+         * flags
+         */
         int retval = zsetAdd(zobj, score, ele, &retflags, &newscore);
         if (retval == 0) {
             addReplyError(c,nanerr);
