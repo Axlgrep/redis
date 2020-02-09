@@ -59,6 +59,8 @@ void aofClosePipes(void);
 
 #define AOF_RW_BUF_BLOCK_SIZE (1024*1024*10)    /* 10 MB per block */
 
+/* 在AOF重写期间, 新的AOF数据会存放到由aofrwblock结点组成的链表中,
+ * 每个结点可以存储10MB数据 */
 typedef struct aofrwblock {
     unsigned long used, free;
     char buf[AOF_RW_BUF_BLOCK_SIZE];
@@ -148,13 +150,17 @@ void aofRewriteBufferAppend(unsigned char *s, unsigned long len) {
         if (len) { /* First block to allocate, or need another block. */
             int numblocks;
 
+            /* 生成的新block由下一次循环写入数据 */
             block = zmalloc(sizeof(*block));
             block->free = AOF_RW_BUF_BLOCK_SIZE;
             block->used = 0;
             listAddNodeTail(server.aof_rewrite_buf_blocks,block);
 
             /* Log every time we cross more 10 or 100 blocks, respectively
-             * as a notice or warning. */
+             * as a notice or warning.
+             *
+             * 每10个Blocks打一次notice日志，每100个Blocks打一次warning日志
+             */
             numblocks = listLength(server.aof_rewrite_buf_blocks);
             if (((numblocks+1) % 10) == 0) {
                 int level = ((numblocks+1) % 100) == 0 ? LL_WARNING :
@@ -523,7 +529,11 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
     robj *tmpargv[3];
 
     /* The DB this command was targeting is not the same as the last command
-     * we appended. To issue a SELECT command is needed. */
+     * we appended. To issue a SELECT command is needed.
+     *
+     * 若最后一次AOF追加命令所作用的DB与当前命令的DB不一致，那么我们先追加一条
+     * select db命令切换到正确的DB上来
+     */
     if (dictid != server.aof_selected_db) {
         char seldb[64];
 
@@ -592,7 +602,10 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
     /* If a background append only file rewriting is in progress we want to
      * accumulate the differences between the child DB and the current one
      * in a buffer, so that when the child process will do its work we
-     * can append the differences to the new append only file. */
+     * can append the differences to the new append only file.
+     *
+     * 如果当前正在执行aof重写操作
+     */
     if (server.aof_child_pid != -1)
         aofRewriteBufferAppend((unsigned char*)buf,sdslen(buf));
 

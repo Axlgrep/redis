@@ -70,6 +70,9 @@ static void aeApiFree(aeEventLoop *eventLoop) {
     zfree(state);
 }
 
+/* epoll的事件注册函数，实际就是将epoll_create函数创建的特殊描述符进行注册
+ * 读事件(有新连接过来的时候会触发acceptTcpHandler函数)
+ */
 static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
     aeApiState *state = eventLoop->apidata;
     struct epoll_event ee = {0}; /* avoid valgrind warning */
@@ -90,12 +93,15 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
 static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {
     aeApiState *state = eventLoop->apidata;
     struct epoll_event ee = {0}; /* avoid valgrind warning */
+    /* 获取delete mask之后该fd剩余的监听事件 */
     int mask = eventLoop->events[fd].mask & (~delmask);
 
     ee.events = 0;
     if (mask & AE_READABLE) ee.events |= EPOLLIN;
     if (mask & AE_WRITABLE) ee.events |= EPOLLOUT;
     ee.data.fd = fd;
+    /* 若剩余的监听事件不为NONE, 则修改已经注册的fd的监听事件,
+     * 否则从epfd中删除这个fd */
     if (mask != AE_NONE) {
         epoll_ctl(state->epfd,EPOLL_CTL_MOD,fd,&ee);
     } else {
@@ -119,7 +125,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
             int mask = 0;
             struct epoll_event *e = state->events+j;
 
-            if (e->events & EPOLLIN) mask |= AE_READABLE;
+            if (e->events & EPOLLIN)  mask |= AE_READABLE;
             if (e->events & EPOLLOUT) mask |= AE_WRITABLE;
             if (e->events & EPOLLERR) mask |= AE_WRITABLE;
             if (e->events & EPOLLHUP) mask |= AE_WRITABLE;

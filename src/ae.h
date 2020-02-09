@@ -65,20 +65,20 @@ typedef void aeBeforeSleepProc(struct aeEventLoop *eventLoop);
 /* File event structure */
 typedef struct aeFileEvent {
     int mask; /* one of AE_(READABLE|WRITABLE) */
-    aeFileProc *rfileProc;
-    aeFileProc *wfileProc;
+    aeFileProc *rfileProc;  /* 指向有读事件调用的处理函数 */
+    aeFileProc *wfileProc;  /* 指向有写事件调用的处理函数 */
     void *clientData;
 } aeFileEvent;
 
 /* Time event structure */
 typedef struct aeTimeEvent {
-    long long id; /* time event identifier. */
-    long when_sec; /* seconds */
-    long when_ms; /* milliseconds */
-    aeTimeProc *timeProc;
+    long long id;        /* time event identifier. */
+    long when_sec;       /* seconds */
+    long when_ms;        /* milliseconds */
+    aeTimeProc *timeProc;/* 定时事件的调用函数 */
     aeEventFinalizerProc *finalizerProc;
     void *clientData;
-    struct aeTimeEvent *next;
+    struct aeTimeEvent *next; /* 指向下一个定时事件的指针 */
 } aeTimeEvent;
 
 /* A fired event */
@@ -90,14 +90,14 @@ typedef struct aeFiredEvent {
 /* State of an event based program */
 typedef struct aeEventLoop {
     int maxfd;   /* highest file descriptor currently registered */
-    int setsize; /* max number of file descriptors tracked */
-    long long timeEventNextId;
+    int setsize; /* max number of file descriptors tracked, 其中包括最大客户端连接数以及监听端口号的描述符以及额外添加的一些冗余量 */
+    long long timeEventNextId; /* 定时事件的ID，单调递增 */
     time_t lastTime;     /* Used to detect system clock skew */
     aeFileEvent *events; /* Registered events */
     aeFiredEvent *fired; /* Fired events */
-    aeTimeEvent *timeEventHead;
+    aeTimeEvent *timeEventHead; /* 环形链表, 存储所有的定时事件 */
     int stop;
-    void *apidata; /* This is used for polling API specific data */
+    void *apidata; /* This is used for polling API specific data 存放epoll_create()生成的fd以及对应epoll_event数组的结构体 */
     aeBeforeSleepProc *beforesleep;
     aeBeforeSleepProc *aftersleep;
 } aeEventLoop;

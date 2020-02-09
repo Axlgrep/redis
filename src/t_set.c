@@ -60,6 +60,8 @@ int setTypeAdd(robj *subject, sds value) {
             return 1;
         }
     } else if (subject->encoding == OBJ_ENCODING_INTSET) {
+        /* 新添加的Member是否可以被转换成longlong类型，如果不能
+         * 就需要将Set的底层INTSET结构转换成HashTable了 */
         if (isSdsRepresentableAsLongLong(value,&llval) == C_OK) {
             uint8_t success = 0;
             subject->ptr = intsetAdd(subject->ptr,llval,&success);

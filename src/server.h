@@ -220,9 +220,9 @@ typedef long long mstime_t; /* millisecond time type. */
 #define CLIENT_SLAVE (1<<0)   /* This client is a slave server */
 #define CLIENT_MASTER (1<<1)  /* This client is a master server */
 #define CLIENT_MONITOR (1<<2) /* This client is a slave monitor, see MONITOR */
-#define CLIENT_MULTI (1<<3)   /* This client is in a MULTI context */
+#define CLIENT_MULTI (1<<3)   /* This client is in a MULTI context, 当前client处于事务状态 */
 #define CLIENT_BLOCKED (1<<4) /* The client is waiting in a blocking operation */
-#define CLIENT_DIRTY_CAS (1<<5) /* Watched keys modified. EXEC will fail. */
+#define CLIENT_DIRTY_CAS (1<<5) /* Watched keys modified. EXEC will fail. 当前client监听的Key被修改了, 事物执行将失败 */
 #define CLIENT_CLOSE_AFTER_REPLY (1<<6) /* Close after writing entire reply. */
 #define CLIENT_UNBLOCKED (1<<7) /* This client was unblocked and is stored in
                                   server.unblocked_clients */
@@ -230,7 +230,7 @@ typedef long long mstime_t; /* millisecond time type. */
 #define CLIENT_ASKING (1<<9)     /* Client issued the ASKING command */
 #define CLIENT_CLOSE_ASAP (1<<10)/* Close this client ASAP */
 #define CLIENT_UNIX_SOCKET (1<<11) /* Client connected via Unix domain socket */
-#define CLIENT_DIRTY_EXEC (1<<12)  /* EXEC will fail for errors while queueing */
+#define CLIENT_DIRTY_EXEC (1<<12)  /* EXEC will fail for errors while queueing, 当前client事务dirty了, 可能执行了无效的命令 */
 #define CLIENT_MASTER_FORCE_REPLY (1<<13)  /* Queue replies even if is master */
 #define CLIENT_FORCE_AOF (1<<14)   /* Force AOF propagation of current cmd. */
 #define CLIENT_FORCE_REPL (1<<15)  /* Force replication of current cmd. */
@@ -615,7 +615,7 @@ typedef struct redisDb {
     dict *expires;              /* Timeout of keys with a timeout set */
     dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP)*/
     dict *ready_keys;           /* Blocked keys that received a PUSH */
-    dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
+    dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS, dict的键存Key, 值存watch该key的client(链表组成) */
     int id;                     /* Database ID */
     long long avg_ttl;          /* Average TTL, just for stats */
 } redisDb;
@@ -685,10 +685,10 @@ typedef struct client {
                                yet not applied replication stream that we
                                are receiving from the master. */
     size_t querybuf_peak;   /* Recent (100ms or more) peak of querybuf size. */
-    int argc;               /* Num of arguments of current command. */
-    robj **argv;            /* Arguments of current command. */
+    int argc;               /* Num of arguments of current command. 当前待处理命令的参数个数 */
+    robj **argv;            /* Arguments of current command. 当前待处理命令参数指针数组的指针*/
     struct redisCommand *cmd, *lastcmd;  /* Last command executed. */
-    int reqtype;            /* Request protocol type: PROTO_REQ_* */
+    int reqtype;            /* Request protocol type: PROTO_REQ_INLINE or PROTO_REQ_MULTIBULK */
     int multibulklen;       /* Number of multi bulk arguments left to read. */
     long bulklen;           /* Length of bulk argument in multi bulk request. */
     list *reply;            /* List of reply objects to send to the client. response buf存不下的返回值会被存放在reply链表当中 */
@@ -696,10 +696,10 @@ typedef struct client {
     size_t sentlen;         /* Amount of bytes already sent in the current
                                buffer or object being sent. */
     time_t ctime;           /* Client creation time. */
-    time_t lastinteraction; /* Time of the last interaction, used for timeout */
+    time_t lastinteraction; /* Time of the last interaction, used for timeout, 记录最后一次通行时间，用于判定超时 */
     time_t obuf_soft_limit_reached_time;
     int flags;              /* Client flags: CLIENT_* macros. */
-    int authenticated;      /* When requirepass is non-NULL. */
+    int authenticated;      /* When requirepass is non-NULL. 认证通过为1，否则为0 */
     int replstate;          /* Replication state if this is a slave. */
     int repl_put_online_on_ack; /* Install slave write handler on ACK. */
     int repldbfd;           /* Replication DB file descriptor. */
@@ -721,7 +721,7 @@ typedef struct client {
     int btype;              /* Type of blocking op if CLIENT_BLOCKED. */
     blockingState bpop;     /* blocking state */
     long long woff;         /* Last write global replication offset. */
-    list *watched_keys;     /* Keys WATCHED for MULTI/EXEC CAS */
+    list *watched_keys;     /* Keys WATCHED for MULTI/EXEC CAS, 在执行事务之前可以设置监听的Key存放于此 */
     dict *pubsub_channels;  /* channels a client is interested in (SUBSCRIBE) */
     list *pubsub_patterns;  /* patterns a client is interested in (SUBSCRIBE) */
     sds peerid;             /* Cached peer ID. */
@@ -909,8 +909,8 @@ struct redisServer {
     int bindaddr_count;         /* Number of addresses in server.bindaddr[] */
     char *unixsocket;           /* UNIX socket path */
     mode_t unixsocketperm;      /* UNIX socket permission */
-    int ipfd[CONFIG_BINDADDR_MAX]; /* TCP socket file descriptors */
-    int ipfd_count;             /* Used slots in ipfd[] */
+    int ipfd[CONFIG_BINDADDR_MAX]; /* TCP socket file descriptors 用于accept连接的文件描述符 */
+    int ipfd_count;             /* Used slots in ipfd[]           用于表示ipfd数组中元素的个数 */
     int sofd;                   /* Unix socket file descriptor */
     int cfd[CONFIG_BINDADDR_MAX];/* Cluster bus listening socket */
     int cfd_count;              /* Used slots in cfd[] */
@@ -959,7 +959,7 @@ struct redisServer {
     long long slowlog_log_slower_than; /* SLOWLOG time limit (to get logged) */
     unsigned long slowlog_max_len;     /* SLOWLOG max number of items logged */
     size_t resident_set_size;       /* RSS sampled in serverCron(). */
-    long long stat_net_input_bytes; /* Bytes read from network. */
+    long long stat_net_input_bytes; /* Bytes read from network. 从网络中读取的字节数(客户端请求等) */
     long long stat_net_output_bytes; /* Bytes written to network. */
     size_t stat_rdb_cow_bytes;      /* Copy on write bytes during RDB saving. */
     size_t stat_aof_cow_bytes;      /* Copy on write bytes during AOF rewrite. */
@@ -998,11 +998,11 @@ struct redisServer {
     off_t aof_rewrite_base_size;    /* AOF size on latest startup or rewrite. */
     off_t aof_current_size;         /* AOF current size. */
     int aof_rewrite_scheduled;      /* Rewrite once BGSAVE terminates. */
-    pid_t aof_child_pid;            /* PID if rewriting process */
+    pid_t aof_child_pid;            /* PID if rewriting process, AOF重写进程的pid, 若没有AOF重写进程为-1 */
     list *aof_rewrite_buf_blocks;   /* Hold changes during an AOF rewrite. 由一系列aofrwblock构成, 存储AOF重写期间数据库的变化*/
     sds aof_buf;      /* AOF buffer, written before entering the event loop */
     int aof_fd;       /* File descriptor of currently selected AOF file */
-    int aof_selected_db; /* Currently selected DB in AOF */
+    int aof_selected_db; /* Currently selected DB in AOF. AOF当前指向的DB */
     time_t aof_flush_postponed_start; /* UNIX time of postponed AOF flush */
     time_t aof_last_fsync;            /* UNIX time of last fsync() */
     time_t aof_rewrite_time_last;   /* Time used by last AOF rewrite run. */

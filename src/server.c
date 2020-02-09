@@ -1888,7 +1888,9 @@ void initServer(void) {
 
     /* Create the timer callback, this is our way to process many background
      * operations incrementally, like clients timeout, eviction of unaccessed
-     * expired keys and so forth. */
+     * expired keys and so forth.
+     * 将serverCron设置成定时任务, 每1ms触发一次
+     */
     if (aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL) == AE_ERR) {
         serverPanic("Can't create event loop timers.");
         exit(1);
@@ -2078,6 +2080,7 @@ struct redisCommand *lookupCommandOrOriginal(sds name) {
 void propagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
                int flags)
 {
+    /* 当前服务开启了AOF并且flags带上了PROPAGATE_AOF标记 */
     if (server.aof_state != AOF_OFF && flags & PROPAGATE_AOF)
         feedAppendOnlyFile(cmd,dbid,argv,argc);
     if (flags & PROPAGATE_REPL)
@@ -2339,7 +2342,11 @@ int processCommand(client *c) {
     /* If cluster is enabled perform the cluster redirection here.
      * However we don't perform the redirection if:
      * 1) The sender of this command is our master.
-     * 2) The command has no key arguments. */
+     * 2) The command has no key arguments.
+     *
+     *
+     * cluster部分暂时没看
+     */
     if (server.cluster_enabled &&
         !(c->flags & CLIENT_MASTER) &&
         !(c->flags & CLIENT_LUA &&
@@ -2418,7 +2425,11 @@ int processCommand(client *c) {
     }
 
     /* Don't accept write commands if this is a read only slave. But
-     * accept write commands if this is our master. */
+     * accept write commands if this is our master.
+     *
+     * 当前是slave, 并且是readonly的，并且当前client不是master到自己
+     * 的对应连接, 并且当前是写命令, 报错
+     */
     if (server.masterhost && server.repl_slave_ro &&
         !(c->flags & CLIENT_MASTER) &&
         c->cmd->flags & CMD_WRITE)
@@ -2439,7 +2450,11 @@ int processCommand(client *c) {
     }
 
     /* Only allow INFO and SLAVEOF when slave-serve-stale-data is no and
-     * we are a slave with a broken link with master. */
+     * we are a slave with a broken link with master.
+     *
+     * 当前Redis有主库，但是同步连接还没建立成功或者同步连接断开，考虑到该
+     * 场景下自身数据可能是过期数据，在某些条件下对于请求直接报错
+     */
     if (server.masterhost && server.repl_state != REPL_STATE_CONNECTED &&
         server.repl_serve_stale_data == 0 &&
         !(c->cmd->flags & CMD_STALE))
@@ -2450,13 +2465,20 @@ int processCommand(client *c) {
     }
 
     /* Loading DB? Return an error if the command has not the
-     * CMD_LOADING flag. */
+     * CMD_LOADING flag.
+     *
+     * 当前服务正处于加载数据阶段，并且当前请求的flags属性并没有
+     * 带上CMD_LOADING属性，报错
+     */
     if (server.loading && !(c->cmd->flags & CMD_LOADING)) {
         addReply(c, shared.loadingerr);
         return C_OK;
     }
 
-    /* Lua script too slow? Only allow a limited number of commands. */
+    /* Lua script too slow? Only allow a limited number of commands.
+     *
+     * Lua相关还没看
+     */
     if (server.lua_timedout &&
           c->cmd->proc != authCommand &&
           c->cmd->proc != replconfCommand &&

@@ -171,7 +171,11 @@ int prepareClientToWrite(client *c) {
     if (c->flags & (CLIENT_REPLY_OFF|CLIENT_REPLY_SKIP)) return C_ERR;
 
     /* Masters don't receive replies, unless CLIENT_MASTER_FORCE_REPLY flag
-     * is set. */
+     * is set.
+     *
+     * 如果当前client是Master同步数据给自己的连接，并且没有设置CLIENT_MASTER_FORCE_REPLY,
+     * 返回C_ERR, 无需reply
+     */
     if ((c->flags & CLIENT_MASTER) &&
         !(c->flags & CLIENT_MASTER_FORCE_REPLY)) return C_ERR;
 
@@ -207,6 +211,8 @@ int prepareClientToWrite(client *c) {
 int _addReplyToBuffer(client *c, const char *s, size_t len) {
     size_t available = sizeof(c->buf)-c->bufpos;
 
+    /* 如果flags中带有CLIENT_CLOSE_AFTER_REPLY, 表明早已返回
+     * 了最后的reply, 这条reply不应该再返回 */
     if (c->flags & CLIENT_CLOSE_AFTER_REPLY) return C_OK;
 
     /* If there already are entries in the reply list, we cannot
@@ -634,7 +640,11 @@ static void acceptCommonHandler(int fd, int flags, char *ip) {
     /* If maxclient directive is set and this is one client more... close the
      * connection. Note that we create the client instead to check before
      * for this condition, since now the socket is already set in non-blocking
-     * mode and we can send an error for free using the Kernel I/O */
+     * mode and we can send an error for free using the Kernel I/O
+     *
+     * 在添加了一个新的client之后发现当前Redis的clients总数已经超过maxclients限制
+     * 向该client回写报错信息，并且关闭连接
+     */
     if (listLength(server.clients) > server.maxclients) {
         char *err = "-ERR max number of clients reached\r\n";
 
@@ -1056,20 +1066,29 @@ void resetClient(client *c) {
     }
 }
 
-/* Like processMultibulkBuffer(), but for the inline protocol instead of RESP,
+/* Like processMultibulkBuffer(), but for the inline protocol instead of
+ * RESP((REdis Serialization Protocol),
  * this function consumes the client query buffer and creates a command ready
  * to be executed inside the client structure. Returns C_OK if the command
  * is ready to be executed, or C_ERR if there is still protocol to read to
  * have a well formed command. The function also returns C_ERR when there is
  * a protocol error: in such a case the client structure is setup to reply
- * with the error and close the connection. */
+ * with the error and close the connection.
+ *
+ * inline buffer like: 'set a b\n'
+ * inline buffer不像RESP那样可以在整条命令还未完全加载完毕时先解析部分参数,
+ * 一定是一条完整的命令加载完毕后才开始解析
+ */
 int processInlineBuffer(client *c) {
     char *newline;
     int argc, j;
     sds *argv, aux;
     size_t querylen;
 
-    /* Search for end of line */
+    /* Search for end of line
+     *
+     * inline buffer每条命令以\n结尾
+     */
     newline = strchr(c->querybuf,'\n');
 
     /* Nothing to do without a \r\n */
@@ -1198,6 +1217,9 @@ int processMultibulkBuffer(client *c) {
          * 我们还需要把'\r'后面的'\n'也解析完毕才算完成，所以当当前querybuf内的内容
          * 还不能凑成一个完整的multibulklen, 我们返回C_ERR, 等待从socket里面获取更多
          * 内容，再尝试重新解析(下面解析bulklen和bulk argument也是同理)
+         *
+         * 实际上就是要满足querybuf的长度必须大于等于解析的字段
+         * 长度+2: newline-(c->querybuf) + 2 <= ((signed)sdslen(c->querybuf))
          */
         if (newline-(c->querybuf) > ((signed)sdslen(c->querybuf)-2))
             return C_ERR;
@@ -1232,7 +1254,9 @@ int processMultibulkBuffer(client *c) {
     }
 
     serverAssertWithInfo(c,NULL,c->multibulklen > 0);
-    /* 解析当前命令multibulklen个字段 */
+    /* 解析当前命令multibulklen个字段
+     * like: *2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n
+     */
     while(c->multibulklen) {
         /* Read bulk length if unknown */
         if (c->bulklen == -1) {
@@ -1270,7 +1294,7 @@ int processMultibulkBuffer(client *c) {
             pos += newline-(c->querybuf+pos)+2;
             /* 如果当前读取的字段大于32kb, 那么将当前字段相关内容
              * 放置到querybuf的前端，并且还会判断当前querybuf是否
-             * 完成存储下了当前字段，若没有，则会分配额外的空间确
+             * 完全存储下了当前字段，若没有，则会分配额外的空间确
              * 保可以容纳当前字段
              */
             if (ll >= PROTO_MBULK_BIG_ARG) {
@@ -1354,7 +1378,11 @@ void processInputBuffer(client *c) {
     server.current_client = c;
     /* Keep processing while there is something in the input buffer */
     while(sdslen(c->querybuf)) {
-        /* Return if clients are paused. */
+        /* Return if clients are paused.
+         *
+         * 如果当前client并不是指向slave server的，并且当前server处于
+         * clients_paused状态
+         */
         if (!(c->flags & CLIENT_SLAVE) && clientsArePaused()) break;
 
         /* Immediately abort if the client is in the middle of something. */
@@ -1367,7 +1395,10 @@ void processInputBuffer(client *c) {
          * The same applies for clients we want to terminate ASAP. */
         if (c->flags & (CLIENT_CLOSE_AFTER_REPLY|CLIENT_CLOSE_ASAP)) break;
 
-        /* Determine request type when unknown. */
+        /* Determine request type when unknown.
+         *
+         * reqtype为0表明没有未处理完的请求，当前是一个全新的请求
+         */
         if (!c->reqtype) {
             if (c->querybuf[0] == '*') {
                 c->reqtype = PROTO_REQ_MULTIBULK;
@@ -1416,6 +1447,7 @@ void processInputBuffer(client *c) {
     server.current_client = NULL;
 }
 
+/* 解析客户端命令请求的函数(fd在readable时触发该函数的调用) */
 void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     client *c = (client*) privdata;
     int nread, readlen;
@@ -1439,9 +1471,10 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     }
 
     qblen = sdslen(c->querybuf);
+    /* 更新client的querybuf_peak属性 */
     if (c->querybuf_peak < qblen) c->querybuf_peak = qblen;
-    // 这里是希望对querybuf做扩容操作，如果剩余空间大于readlen
-    // 则内部不做什么事情
+    /* 这里是希望对querybuf做扩容操作，如果剩余空间大于readlen
+     * 则内部不做什么事情 */
     c->querybuf = sdsMakeRoomFor(c->querybuf, readlen);
     nread = read(fd, c->querybuf+qblen, readlen);
     if (nread == -1) {
@@ -1459,7 +1492,11 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     } else if (c->flags & CLIENT_MASTER) {
         /* Append the query buffer to the pending (not applied) buffer
          * of the master. We'll use this buffer later in order to have a
-         * copy of the string applied by the last command executed. */
+         * copy of the string applied by the last command executed.
+         *
+         * 如果当前连接是Master到自己的(自己当前身份为从), 拷贝当前读取的
+         * 内容追加到pending_querybuf尾部
+         */
         c->pending_querybuf = sdscatlen(c->pending_querybuf,
                                         c->querybuf+qblen,nread);
     }
@@ -1468,11 +1505,13 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     // 需要更新一下sds头部的长度信息
     sdsIncrLen(c->querybuf,nread);
     c->lastinteraction = server.unixtime;
+    /* 如果当前client是master服务的, 更新偏移量信息 */
     if (c->flags & CLIENT_MASTER) c->read_reploff += nread;
     server.stat_net_input_bytes += nread;
     if (sdslen(c->querybuf) > server.client_max_querybuf_len) {
         sds ci = catClientInfoString(sdsempty(),c), bytes = sdsempty();
 
+        /* 将当前客户端的信息以及querybuf首部64 Bytes的数据打印出来 */
         bytes = sdscatrepr(bytes,c->querybuf,64);
         serverLog(LL_WARNING,"Closing client that reached max query buffer length: %s (qbuf initial bytes: %s)", ci, bytes);
         sdsfree(ci);
@@ -1486,7 +1525,10 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
      * processing the buffer, to understand how much of the replication stream
      * was actually applied to the master state: this quantity, and its
      * corresponding part of the replication stream, will be propagated to
-     * the sub-slaves and to the replication backlog. */
+     * the sub-slaves and to the replication backlog.
+     *
+     * 若flags不带CLIENT_MASTER标记，说明当前请求并不是从Master传递过来的
+     */
     if (!(c->flags & CLIENT_MASTER)) {
         processInputBuffer(c);
     } else {
@@ -1979,7 +2021,11 @@ int checkClientOutputBufferLimits(client *c) {
  *
  * Note: we need to close the client asynchronously because this function is
  * called from contexts where the client can't be freed safely, i.e. from the
- * lower level functions pushing data inside the client output buffers. */
+ * lower level functions pushing data inside the client output buffers.
+ *
+ * 若client的reply数据超过了限制, 则考虑将client关闭, 目的应该是考虑有一些自己实现的
+ * client不规范没能及时读取reply, 导致reply在redis堆积占用内存的场景.
+ */
 void asyncCloseClientOnOutputBufferLimitReached(client *c) {
     serverAssert(c->reply_bytes < SIZE_MAX-(1024*64));
     if (c->reply_bytes == 0 || c->flags & CLIENT_CLOSE_ASAP) return;

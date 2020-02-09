@@ -133,6 +133,13 @@ void aeStop(aeEventLoop *eventLoop) {
     eventLoop->stop = 1;
 }
 
+/*
+ * 调用aeApiAddEvent函数(内部将调用epoll的事件注册函数, 将监听连接的文件描述符
+ * 进行注册, 文件描述符可以作为eventLoop中events数组的索引, 从而找到aeFileEvent,
+ * 然后再调用指针指向对应事件的处理函数, 这里包括监听连接请求的fd, 和管道的fd等
+ *
+ * 在构建client对应的fileEvent时会将client结构体的指针赋值给clientData参数
+ */
 int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
         aeFileProc *proc, void *clientData)
 {
@@ -161,6 +168,10 @@ void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask)
 
     aeApiDelEvent(eventLoop, fd, mask);
     fe->mask = fe->mask & (~mask);
+    /* 若当前的fd是maxfd, 并且经过aeDeleteFileEvent之后该fd已经没有
+     * 事件需要监听(相当于这个fd已经无效了), 我们需要更新maxfd(从大
+     * 到小找到第一个依然有监听事件的fd
+     */
     if (fd == eventLoop->maxfd && fe->mask == AE_NONE) {
         /* Update the max fd */
         int j;
@@ -187,6 +198,7 @@ static void aeGetTime(long *seconds, long *milliseconds)
     *milliseconds = tv.tv_usec/1000;
 }
 
+/* 设置下一次触发定时事件的时间 */
 static void aeAddMillisecondsToNow(long long milliseconds, long *sec, long *ms) {
     long cur_sec, cur_ms, when_sec, when_ms;
 
@@ -243,6 +255,8 @@ int aeDeleteTimeEvent(aeEventLoop *eventLoop, long long id)
  * 1) Insert the event in order, so that the nearest is just the head.
  *    Much better but still insertion or deletion of timers is O(N).
  * 2) Use a skiplist to have this operation as O(1) and insertion as O(log(N)).
+ *
+ * 获取当前timeEventHead环形链表中, 时间戳最小的那个定时事件并且返回
  */
 static aeTimeEvent *aeSearchNearestTimer(aeEventLoop *eventLoop)
 {
@@ -358,7 +372,10 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
     /* Note that we want call select() even if there are no
      * file events to process as long as we want to process time
      * events, in order to sleep until the next time event is ready
-     * to fire. */
+     * to fire.
+     *
+     * maxfd不为-1说明当前eventLoop里面至少有一个file events
+     */
     if (eventLoop->maxfd != -1 ||
         ((flags & AE_TIME_EVENTS) && !(flags & AE_DONT_WAIT))) {
         int j;
@@ -374,11 +391,17 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             tvp = &tv;
 
             /* How many milliseconds we need to wait for the next
-             * time event to fire? */
+             * time event to fire?
+             *
+             * 计算定时事件距离触发时间还有多久
+             */
             long long ms =
                 (shortest->when_sec - now_sec)*1000 +
                 shortest->when_ms - now_ms;
 
+            /* 若定时事件还没达到触发时间，则记录剩余时间
+             * 若已经到达甚至已经过了触发时间，则将剩余时间标记为0
+             */
             if (ms > 0) {
                 tvp->tv_sec = ms/1000;
                 tvp->tv_usec = (ms % 1000)*1000;
@@ -400,7 +423,11 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
         }
 
         /* Call the multiplexing API, will return only on timeout or when
-         * some event fires. */
+         * some event fires.
+         *
+         * 上面先获取最近一个定时事件的触发时间，然后计算距离触发时间的剩余
+         * 时间timeout，内部通过epoll_wait函数阻塞最多timeout时间
+         */
         numevents = aeApiPoll(eventLoop, tvp);
 
         /* After sleep callback. */
@@ -414,8 +441,8 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             int rfired = 0;
 
 	    /* note the fe->mask & mask & ... code: maybe an already processed
-             * event removed an element that fired and we still didn't
-             * processed, so we check if the event is still valid. */
+         * event removed an element that fired and we still didn't
+         * processed, so we check if the event is still valid. */
             if (fe->mask & mask & AE_READABLE) {
                 rfired = 1;
                 fe->rfileProc(eventLoop,fd,fe->clientData,mask);

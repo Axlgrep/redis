@@ -201,8 +201,8 @@
                                representing the previous entry len. */
 
 /* Different encoding/length possibilities */
-#define ZIP_STR_MASK 0xc0
-#define ZIP_INT_MASK 0x30
+#define ZIP_STR_MASK 0xc0          /* 11000000 */
+#define ZIP_INT_MASK 0x30          /* 00110000 */
 #define ZIP_STR_06B (0 << 6)       /* 00000000 */
 #define ZIP_STR_14B (1 << 6)       /* 01000000 */
 #define ZIP_STR_32B (2 << 6)       /* 10000000 */
@@ -217,9 +217,9 @@
 #define ZIP_INT_IMM_MASK 0x0f   /* Mask to extract the 4 bits value. To add
                                    one is needed to reconstruct the value. */
 
-/* 为什么编码类型是ZIP_INT_IMM_MIN的取值范围只能是[0, 12]:
- *   由于ZipList末尾一字节的标记位内部存储的总是0xFF, 这是
- *   为了避免和末尾标记位混淆
+/* Q: 为什么编码类型是ZIP_INT_IMM_MIN的取值范围只能是[0, 12]:
+ *
+ * A: 这是为了避免和ZIP_INT_8B冲突
  *
  *   ZipList末尾标记位:                    11111111
  *
@@ -228,6 +228,8 @@
  *   当存储2的场景 : 11110001 + 00000010 = 11110011
  *   ...
  *   当存储12的场景: 11110001 + 00001100 = 11111101
+ *
+ *   ZIP_INT_8B                          = 11111110
  */
 #define ZIP_INT_IMM_MIN 0xf1    /* 11110001 */
 #define ZIP_INT_IMM_MAX 0xfd    /* 11111101 */
@@ -549,7 +551,7 @@ int zipTryEncoding(unsigned char *entry, unsigned int entrylen, long long *v, un
         } else if (value >= INT32_MIN && value <= INT32_MAX) {    // [-2^31, 2^31)
             *encoding = ZIP_INT_32B;
         } else {
-            *encoding = ZIP_INT_64B;                              // [-2^63, 2^53)
+            *encoding = ZIP_INT_64B;                              // [-2^63, 2^63)
         }
         *v = value;
         return 1;

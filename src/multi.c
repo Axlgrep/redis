@@ -31,7 +31,12 @@
 
 /* ================================ MULTI/EXEC ============================== */
 
-/* Client state initialization for MULTI/EXEC */
+/* Client state initialization for MULTI/EXEC
+ *
+ * 初始化事务相关的数据结构
+ * mstate.commands是一个指向multiCmd数组的指针, 由于初始化时没有任何命令，所以赋值为NULL
+ * mstate.count存储multiCmd数组的大小
+ */
 void initClientMultiState(client *c) {
     c->mstate.commands = NULL;
     c->mstate.count = 0;
@@ -52,7 +57,10 @@ void freeClientMultiState(client *c) {
     zfree(c->mstate.commands);
 }
 
-/* Add a new command into the MULTI commands queue */
+/* Add a new command into the MULTI commands queue
+ *
+ * 将一条新的命令添加到client自身的事务队列当中
+ */
 void queueMultiCommand(client *c) {
     multiCmd *mc;
     int j;
@@ -69,6 +77,10 @@ void queueMultiCommand(client *c) {
     c->mstate.count++;
 }
 
+/*
+ * 清除当前客户端所有与事物相关的数据, 包括事物队列中的命令
+ * 以及当前客户端监听的Key信息等
+ */
 void discardTransaction(client *c) {
     freeClientMultiState(c);
     initClientMultiState(c);
@@ -77,12 +89,19 @@ void discardTransaction(client *c) {
 }
 
 /* Flag the transacation as DIRTY_EXEC so that EXEC will fail.
- * Should be called every time there is an error while queueing a command. */
+ * Should be called every time there is an error while queueing a command.
+ *
+ * 如果当前client处于事务状态，标记为dirty状态
+ */
 void flagTransaction(client *c) {
     if (c->flags & CLIENT_MULTI)
         c->flags |= CLIENT_DIRTY_EXEC;
 }
 
+/*
+ * 检测当前client是否已经处于multi状态, 如果未处于则
+ * 将flags对应的CLIENT_MULTI位置为1
+ */
 void multiCommand(client *c) {
     if (c->flags & CLIENT_MULTI) {
         addReplyError(c,"MULTI calls can not be nested");
@@ -119,14 +138,16 @@ void execCommand(client *c) {
     int must_propagate = 0; /* Need to propagate MULTI/EXEC to AOF / slaves? */
     int was_master = server.masterhost == NULL;
 
+    /* 执行了exec命令，但是当前并不处于MULTI状态, 报错 */
     if (!(c->flags & CLIENT_MULTI)) {
         addReplyError(c,"EXEC without MULTI");
         return;
     }
 
     /* Check if we need to abort the EXEC because:
-     * 1) Some WATCHed key was touched.
-     * 2) There was a previous error while queueing commands.
+     * 1) Some WATCHed key was touched. 如果执行exec时发现之前watch的key被修改了，返回nil
+     * 2) There was a previous error while queueing commands. 如果执行exec时发现之前命令有
+     * 报错，返回Transaction discarded because of previous errors
      * A failed EXEC in the first case returns a multi bulk nil object
      * (technically it is not an error but a special behavior), while
      * in the second an EXECABORT error is returned. */
@@ -152,7 +173,12 @@ void execCommand(client *c) {
          * is not readonly nor an administrative one.
          * This way we'll deliver the MULTI/..../EXEC block as a whole and
          * both the AOF and the replication link will have the same consistency
-         * and atomicity guarantees. */
+         * and atomicity guarantees.
+         *
+         * 找到第一个不是readonly并且不是admin的的命令之后, 传播multi命令(之所以
+         * 不在执行的multi命令时就传播是因为在一个客户端执行multi到exec命令之间
+         * 可能存在其他客户端的写入操作，我们需要保证一个客户端事务命令一起执行)
+         */
         if (!must_propagate && !(c->cmd->flags & (CMD_READONLY|CMD_ADMIN))) {
             execCommandPropagateMulti(c);
             must_propagate = 1;
@@ -207,13 +233,22 @@ handle_monitor:
 
 /* In the client->watched_keys list we need to use watchedKey structures
  * as in order to identify a key in Redis we need both the key name and the
- * DB */
+ * DB
+ *
+ * 每个watchedKey内部会记录Key以及所属的DB
+ */
 typedef struct watchedKey {
     robj *key;
     redisDb *db;
 } watchedKey;
 
-/* Watch for the specified key */
+/* Watch for the specified key
+ *
+ * 这里主要更新两个数据结构
+ *
+ * db中的watched_keys字典记录key到监听该key的client链表的映射关系
+ * client中的watched_keys链表记录该client监听的Key信息(其中包括Key本身以及Key所属的db)
+ */
 void watchForKey(client *c, robj *key) {
     list *clients = NULL;
     listIter li;
@@ -260,8 +295,12 @@ void unwatchAllKeys(client *c) {
         wk = listNodeValue(ln);
         clients = dictFetchValue(wk->db->watched_keys, wk->key);
         serverAssertWithInfo(c,NULL,clients != NULL);
+        /* 通过c找到clients对应的Node, 然后执行删除操作 */
         listDelNode(clients,listSearchKey(clients,c));
-        /* Kill the entry at all if this was the only client */
+        /* Kill the entry at all if this was the only client
+         * 某个Key没有任何client watch的情况下将该Key从wateched_keys
+         * 字典中删除
+         */
         if (listLength(clients) == 0)
             dictDelete(wk->db->watched_keys, wk->key);
         /* Remove this watched key from the client->watched list */

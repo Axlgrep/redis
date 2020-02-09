@@ -4,6 +4,14 @@ CUR_DIR=$(pwd)
 REDIS_CLI=$CUR_DIR/src/redis-cli
 REDIS_SERVER=$CUR_DIR/src/redis-server
 
+# clean dirty file
+cd $CUR_DIR/redis_cluster/7000 && rm 7000.log dump.rdb nodes.conf && cd -
+cd $CUR_DIR/redis_cluster/7001 && rm 7001.log dump.rdb nodes.conf && cd -
+cd $CUR_DIR/redis_cluster/7002 && rm 7002.log dump.rdb nodes.conf && cd -
+cd $CUR_DIR/redis_cluster/7003 && rm 7003.log dump.rdb nodes.conf && cd -
+cd $CUR_DIR/redis_cluster/7004 && rm 7004.log dump.rdb nodes.conf && cd -
+cd $CUR_DIR/redis_cluster/7005 && rm 7005.log dump.rdb nodes.conf && cd -
+
 # start server
 cd $CUR_DIR/redis_cluster/7000 && $REDIS_SERVER ./7000-redis.conf && cd -
 cd $CUR_DIR/redis_cluster/7001 && $REDIS_SERVER ./7001-redis.conf && cd -

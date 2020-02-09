@@ -70,7 +70,9 @@ unsigned long LFUDecrAndReturn(robj *o);
 
 /* Return the LRU clock, based on the clock resolution. This is a time
  * in a reduced-bits format that can be used to set and check the
- * object->lru field of redisObject structures. */
+ * object->lru field of redisObject structures.
+ * 先将ms转换成s, 最后RedisObject中的lru值占据24 bits, 所以这个需要执行一下&运算
+ */
 unsigned int getLRUClock(void) {
     return (mstime()/LRU_CLOCK_RESOLUTION) & LRU_CLOCK_MAX;
 }
