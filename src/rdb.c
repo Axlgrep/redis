@@ -1672,6 +1672,8 @@ void backgroundSaveDoneHandlerDisk(int exitcode, int bysignal) {
     if (!bysignal && exitcode == 0) {
         serverLog(LL_NOTICE,
             "Background saving terminated with success");
+        // 由于bgsave期间, 可能还存在数据库修改, 所以用当前dirty减去
+        // 启动rdb之前的dirty的差作为新的dirty
         server.dirty = server.dirty - server.dirty_before_bgsave;
         server.lastsave = time(NULL);
         server.lastbgsave_status = C_OK;

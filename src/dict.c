@@ -308,6 +308,9 @@ int dictAdd(dict *d, void *key, void *val)
  * If key already exists NULL is returned, and "*existing" is populated
  * with the existing entry if existing is not NULL.
  *
+ * 如果key对应的Entry已经存在，返回NULL，并且*existing指向对应已经存在的Entry
+ * 否则返回新添加Entry的指针
+ *
  * If key was added, the hash entry is returned to be manipulated by the caller.
  */
 dictEntry *dictAddRaw(dict *d, void *key, dictEntry **existing)

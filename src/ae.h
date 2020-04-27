@@ -72,10 +72,10 @@ typedef struct aeFileEvent {
 
 /* Time event structure */
 typedef struct aeTimeEvent {
-    long long id;        /* time event identifier. */
-    long when_sec;       /* seconds */
-    long when_ms;        /* milliseconds */
-    aeTimeProc *timeProc;/* 定时事件的调用函数 */
+    long long id;             /* time event identifier. */
+    long when_sec;            /* seconds */
+    long when_ms;             /* milliseconds */
+    aeTimeProc *timeProc;     /* 定时事件的调用函数 */
     aeEventFinalizerProc *finalizerProc;
     void *clientData;
     struct aeTimeEvent *next; /* 指向下一个定时事件的指针 */
@@ -93,9 +93,9 @@ typedef struct aeEventLoop {
     int setsize; /* max number of file descriptors tracked, 其中包括最大客户端连接数以及监听端口号的描述符以及额外添加的一些冗余量 */
     long long timeEventNextId; /* 定时事件的ID，单调递增 */
     time_t lastTime;     /* Used to detect system clock skew */
-    aeFileEvent *events; /* Registered events */
+    aeFileEvent *events; /* Registered events 指向aeFileEvent数组的指针 */
     aeFiredEvent *fired; /* Fired events */
-    aeTimeEvent *timeEventHead; /* 环形链表, 存储所有的定时事件 */
+    aeTimeEvent *timeEventHead; /* 链表, 存储所有的定时事件 */
     int stop;
     void *apidata; /* This is used for polling API specific data 存放epoll_create()生成的fd以及对应epoll_event数组的结构体 */
     aeBeforeSleepProc *beforesleep;

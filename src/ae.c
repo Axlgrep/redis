@@ -256,7 +256,7 @@ int aeDeleteTimeEvent(aeEventLoop *eventLoop, long long id)
  *    Much better but still insertion or deletion of timers is O(N).
  * 2) Use a skiplist to have this operation as O(1) and insertion as O(log(N)).
  *
- * 获取当前timeEventHead环形链表中, 时间戳最小的那个定时事件并且返回
+ * 获取当前timeEventHead链表中, 触发时间最接近的那个定时事件并且返回
  */
 static aeTimeEvent *aeSearchNearestTimer(aeEventLoop *eventLoop)
 {
@@ -304,7 +304,11 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
         long now_sec, now_ms;
         long long id;
 
-        /* Remove events scheduled for deletion. */
+        /* Remove events scheduled for deletion.
+         * 如果某一个定时事件已经被删除(调用aeDeleteTimeEvent, 将
+         * 事件的id设置为AE_DELETED_EVENT_ID, 表示这个事件被删除),
+         * 那么我们直接调用它的清理函数，并且从timeEvent链表中删除
+         */
         if (te->id == AE_DELETED_EVENT_ID) {
             aeTimeEvent *next = te->next;
             if (prev == NULL)
@@ -322,7 +326,11 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
          * this iteration. Note that this check is currently useless: we always
          * add new timers on the head, however if we change the implementation
          * detail, this check may be useful again: we keep it here for future
-         * defense. */
+         * defense.
+         *
+         * 就是当前Loop中避免处理由timeEvents所产生的timeEvents(目前没用, 因为
+         * 新的timeEvents总会被加到链表的头部)
+         */
         if (te->id > maxId) {
             te = te->next;
             continue;
@@ -336,6 +344,10 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
             id = te->id;
             retval = te->timeProc(eventLoop, id, te->clientData);
             processed++;
+            /* 若timeProc返回值为不为-1, 则表示距离再一次触发此定时任务的时间,
+             * 我们需要更新aeTimeEvent中的触发时间戳, 若返回AE_NOMORE表示无需
+             * 再调用此定时任务了, 我们做一个删除标记
+             */
             if (retval != AE_NOMORE) {
                 aeAddMillisecondsToNow(retval,&te->when_sec,&te->when_ms);
             } else {
@@ -382,6 +394,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
         aeTimeEvent *shortest = NULL;
         struct timeval tv, *tvp;
 
+        /* 允许计算出tvp让aeApiPoll阻塞一段时间 */
         if (flags & AE_TIME_EVENTS && !(flags & AE_DONT_WAIT))
             shortest = aeSearchNearestTimer(eventLoop);
         if (shortest) {

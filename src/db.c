@@ -1032,7 +1032,11 @@ int removeExpire(redisDb *db, robj *key) {
 void setExpire(client *c, redisDb *db, robj *key, long long when) {
     dictEntry *kde, *de;
 
-    /* Reuse the sds from the main dict in the expire dict */
+    /* Reuse the sds from the main dict in the expire dict
+     * 由于Expire字典中存在的Key在main dict中肯定是存在的, 所以
+     * expire字典直接复用main dict中Key的SDS对象, 这样做是为了节
+     * 省空间
+     */
     kde = dictFind(db->dict,key->ptr);
     serverAssertWithInfo(NULL,key,kde != NULL);
     de = dictAddOrFind(db->expires,dictGetKey(kde));

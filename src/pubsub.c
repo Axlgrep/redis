@@ -47,7 +47,10 @@ int listMatchPubsubPattern(void *a, void *b) {
            (equalStringObjects(pa->pattern,pb->pattern));
 }
 
-/* Return the number of channels + patterns a client is subscribed to. */
+/* Return the number of channels + patterns a client is subscribed to.
+ *
+ * client当前订阅的总频道数(普通频道 + 模式匹配频道)
+ */
 int clientSubscriptionsCount(client *c) {
     return dictSize(c->pubsub_channels)+
            listLength(c->pubsub_patterns);
@@ -75,11 +78,11 @@ int pubsubSubscribeChannel(client *c, robj *channel) {
         }
         listAddNodeTail(clients,c);
     }
-    /* Notify the client */
+    /* Notify the client, 每当订阅一个频道成功，返回以下信息 */
     addReply(c,shared.mbulkhdr[3]);
-    addReply(c,shared.subscribebulk);
-    addReplyBulk(c,channel);
-    addReplyLongLong(c,clientSubscriptionsCount(c));
+    addReply(c,shared.subscribebulk);                /* "subscribe"     */
+    addReplyBulk(c,channel);                         /* 订阅频道的名称  */
+    addReplyLongLong(c,clientSubscriptionsCount(c)); /* 当前订阅频道总数*/
     return retval;
 }
 
@@ -106,7 +109,11 @@ int pubsubUnsubscribeChannel(client *c, robj *channel, int notify) {
         if (listLength(clients) == 0) {
             /* Free the list and associated hash entry at all if this was
              * the latest client, so that it will be possible to abuse
-             * Redis PUBSUB creating millions of channels. */
+             * Redis PUBSUB creating millions of channels.
+             *
+             * 如果某一个普通频道已经没有客户端订阅了，那么将其从pubsub_channels字典
+             * 中删除
+             */
             dictDelete(server.pubsub_channels,channel);
         }
     }
@@ -185,7 +192,11 @@ int pubsubUnsubscribeAllChannels(client *c, int notify) {
 
         count += pubsubUnsubscribeChannel(c,channel,notify);
     }
-    /* We were subscribed to nothing? Still reply to the client. */
+    /* We were subscribed to nothing? Still reply to the client.
+     *
+     * 如果是在unsubscribe all的情况下返回count为0, 说明当前客户端
+     * 本身就没有订阅任何普通频道, 我们仍然需要给客户端返回reply
+     */
     if (notify && count == 0) {
         addReply(c,shared.mbulkhdr[3]);
         addReply(c,shared.unsubscribebulk);
@@ -291,6 +302,7 @@ void unsubscribeCommand(client *c) {
         for (j = 1; j < c->argc; j++)
             pubsubUnsubscribeChannel(c,c->argv[j],1);
     }
+    /* 如果当前client已无任何频道订阅，将其CLIENT_PUBSUB标志去除 */
     if (clientSubscriptionsCount(c) == 0) c->flags &= ~CLIENT_PUBSUB;
 }
 

@@ -187,8 +187,16 @@ int prepareClientToWrite(client *c) {
      * receive writes at this stage. */
     if (!clientHasPendingReplies(c) &&
         !(c->flags & CLIENT_PENDING_WRITE) &&
-        (c->replstate == REPL_STATE_NONE ||
+        (c->replstate == REPL_STATE_NONE ||      /* 普通Client */
          (c->replstate == SLAVE_STATE_ONLINE && !c->repl_put_online_on_ack)))
+        /* 之前一直有一个疑问, Redis的Backlog大小是固定的, 能存储的数据有限, 在Slave需要全同步时,
+         * Master生成和发送RDB到Slave加载完成RDB期间Client向Master写入数据的增量请求到底存在哪,
+         * 实际上在此期间, 增量写请求都会被写入slave的reply buf或者reply list当中, 只不过由于slave
+         * 还没有处于SLAVE_STATE_ONLINE状态(Slave还没收到或者加载完RDB文件), 所以并不会将增量数据发
+         * 送给Slave(可以看出在全同步时, 除了用来生成RDB文件的子进程可能会占用大量的内存, 如果在此
+         * 期间客户端写入压力大, 那么这部分请求都会被缓存在Slave的reply buf(list)当中占用大量的内存)
+         */
+
     {
         /* Here instead of installing the write handler, we just flag the
          * client and put it into a list of clients that have something

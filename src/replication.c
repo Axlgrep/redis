@@ -58,7 +58,9 @@ char *replicationGetSlaveName(client *c) {
     if (c->slave_ip[0] != '\0' ||
         anetPeerToString(c->fd,ip,sizeof(ip),NULL) != -1)
     {
-        /* Note that the 'ip' buffer is always larger than 'c->slave_ip' */
+        /* Note that the 'ip' buffer is always larger than 'c->slave_ip'
+         * 如果slave曾经通过REPLCONF的方式告知过自己的ip/port则使用其之
+         * 前告知的 */
         if (c->slave_ip[0] != '\0') memcpy(ip,c->slave_ip,sizeof(c->slave_ip));
 
         if (c->slave_listening_port)
@@ -125,15 +127,43 @@ void freeReplicationBacklog(void) {
  * the backlog without incrementing the offset.
  * 实际上就是向ring buffer里面写东西，自己理解ring buffer的本质就是一个普通的buffer, 当这个
  * buffer末尾被写满了之后，则新写入的数据会从buffer的起始位置进行覆盖，Redis中用repl_backlog_size
- * 用来表示这个ring buffer的大小, repl_backlog_idx用来表示当前数据已经写到了什么位置，master_repl_offset
+ * 用来表示这个ring buffer的大小, repl_backlog_idx用来表示当前数据已经写到了什么位置，repl_backlog_histlen
+ * 表示buffer中实际的数据体积
+ * master_repl_offset
  * 用来表示写入数据的总量, 通过repl_backlog_histlen可以计算出repl_backlog_off, 而[repl_backlog_off, master_repl_offset]
  * 这个区间内就是ring buffer当前存储的有效数据
  *
  * eg...
  * 假设repl_backlog_size 为10:
- *      1. 写15字节，master_repl_offset = 15, repl_backlog_idx = 5, repl_backlog_histlen = 10, repl_backlog_off = 6, 有效数据区间为[6, 15]
- *      2. 再写4字节, master_repl_offset = 19, repl_backlog_idx = 9, repl_backlog_histlen = 14, repl_backlog_off = 10, 有效区间为[10, 19]
+ * 1. 写入15 Bytes
  *
+ *      0  1  2  3  4  5  6  7  8  9
+ *      -----------------------------
+ *      1  2  3  4  5  6  7  8  9  10
+ *      11 12 13 14 15
+ *                     ^
+ *                     |
+ *             repl_backlog_idx
+ *
+ *      repl_backlog_histlen = 10
+ *      repl_backlog_off     = 6
+ *      master_repl_offset   = 15
+ *      有效数据区间[6, 15]
+ *
+ *
+ * 2. 再写入4 Bytes
+ *      0  1  2  3  4  5  6  7  8  9
+ *      -----------------------------
+ *      1  2  3  4  5  6  7  8  9  10
+ *      11 12 13 14 15 16 17 18 19
+ *                                 ^
+ *                                 |
+ *                         repl_backlog_idx
+ *
+ *      repl_backlog_histlen = 10
+ *      repl_backlog_off     = 10
+ *      master_repl_offset   = 19
+ *      有效数据区间[10, 19]
  */
 void feedReplicationBacklog(void *ptr, size_t len) {
     unsigned char *p = ptr;
@@ -192,7 +222,11 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
      * the stream of data we receive from our master instead, in order to
      * propagate *identical* replication stream. In this way this slave can
      * advertise the same replication ID as the master (since it shares the
-     * master replication history and has the same backlog and offsets). */
+     * master replication history and has the same backlog and offsets).
+     *
+     * 如果当前服务前面还有Master, 那么直接返回: 为了传播相同的复制流, 我们只传播
+     * 从我们的Master接收来的数据
+     */
     if (server.masterhost != NULL) return;
 
     /* If there aren't slaves, and there is no backlog buffer to populate,
@@ -378,13 +412,19 @@ long long addReplyReplicationBacklog(client *c, long long offset) {
     serverLog(LL_DEBUG, "[PSYNC] Skipping: %lld", skip);
 
     /* Point j to the oldest byte, that is actually our
-     * server.repl_backlog_off byte. */
+     * server.repl_backlog_off byte.
+     *
+     * 找到backlog中数据的起始位置(实际上(server.repl_backlog_off - server.repl_backlog_histlen + server.repl_backlog_size) % server.repl_backlog_size)更好理解
+     */
     j = (server.repl_backlog_idx +
         (server.repl_backlog_size-server.repl_backlog_histlen)) %
         server.repl_backlog_size;
     serverLog(LL_DEBUG, "[PSYNC] Index of first byte: %lld", j);
 
-    /* Discard the amount of data to seek to the specified 'offset'. */
+    /* Discard the amount of data to seek to the specified 'offset'.
+     *
+     * 找到backlog中需要同步给Slave数据的起始位置
+     */
     j = (j + skip) % server.repl_backlog_size;
 
     /* Feed slave with data. Since it is a circular buffer we have to
@@ -465,7 +505,10 @@ int masterTryPartialResynchronization(client *c) {
 
     /* Parse the replication offset asked by the slave. Go to full sync
      * on parse error: this should never happen but we try to handle
-     * it in a robust way compared to aborting. */
+     * it in a robust way compared to aborting.
+     *
+     * 解析psync_offset失败, 需要全同步(实际上不会发生这种情况, 为了robust)
+     */
     if (getLongLongFromObjectOrReply(c,c->argv[2],&psync_offset,NULL) !=
        C_OK) goto need_full_resync;
 
@@ -479,7 +522,16 @@ int masterTryPartialResynchronization(client *c) {
         (strcasecmp(master_replid, server.replid2) ||
          psync_offset > server.second_replid_offset))
     {
-        /* Run id "?" is used by slaves that want to force a full resync. */
+        /* Run id "?" is used by slaves that want to force a full resync.
+         * 这里实际上分为以下几种情况:
+         * master_replid为?, 表示slave主动全同步
+         * master_replid不为?, 但是与server.replid和server.replid2都不同,
+         * 这存在不同的复制历史, 被动需要全同步
+         * master_replid不为?, 与server.replid相同, 需要检查psync_offset和
+         * backlog区间的关系，再做决定
+         * master_replid不为?, 与server.replid2相同, 只有psync_offset在小于
+         * 等于server.second_replid_offset的前提下才有可能增量同步
+         */
         if (master_replid[0] != '?') {
             if (strcasecmp(master_replid, server.replid) &&
                 strcasecmp(master_replid, server.replid2))
@@ -500,7 +552,9 @@ int masterTryPartialResynchronization(client *c) {
         goto need_full_resync;
     }
 
-    /* We still have the data our slave is asking for? */
+    /* We still have the data our slave is asking for?
+     * 没有backlog or psync_offset小于backlog左区间 or
+     * psync_offset大于backlog右区间 */
     if (!server.repl_backlog ||
         psync_offset < server.repl_backlog_off ||
         psync_offset > (server.repl_backlog_off + server.repl_backlog_histlen))
@@ -525,7 +579,10 @@ int masterTryPartialResynchronization(client *c) {
     listAddNodeTail(server.slaves,c);
     /* We can't use the connection buffers since they are used to accumulate
      * new commands at this stage. But we are sure the socket send buffer is
-     * empty so this write will never fail actually. */
+     * empty so this write will never fail actually.
+     *
+     * 可以进行增量同步，首先回复+CONTINUE以及主库自己的replid给Slave
+     */
     if (c->slave_capa & SLAVE_CAPA_PSYNC2) {
         buflen = snprintf(buf,sizeof(buf),"+CONTINUE %s\r\n", server.replid);
     } else {
@@ -535,6 +592,7 @@ int masterTryPartialResynchronization(client *c) {
         freeClientAsync(c);
         return C_OK;
     }
+    /* 将psync_offset到backlog尾部之间的数据拷贝到slave的reply buffer中以便同步给Slave */
     psync_len = addReplyReplicationBacklog(c,psync_offset);
     serverLog(LL_NOTICE,
         "Partial resynchronization request from %s accepted. Sending %lld bytes of backlog starting from offset %lld.",
@@ -641,7 +699,10 @@ void syncCommand(client *c) {
     if (c->flags & CLIENT_SLAVE) return;
 
     /* Refuse SYNC requests if we are a slave but the link with our master
-     * is not ok... */
+     * is not ok...
+     * 如果当前处于和自己的Master建立主从关系的过程中，则无法响应其他Slave的
+     * 同步请求
+     */
     if (server.masterhost && server.repl_state != REPL_STATE_CONNECTED) {
         addReplySds(c,sdsnew("-NOMASTERLINK Can't SYNC while not connected with my master\r\n"));
         return;
@@ -1218,6 +1279,7 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
     }
 
     server.repl_transfer_lastio = server.unixtime;
+    // 将从socket中读取的内容写入本地RDB文件
     if (write(server.repl_transfer_fd,buf,nread) != nread) {
         serverLog(LL_WARNING,"Write error or short write writing to the DB dump file needed for MASTER <-> SLAVE synchronization: %s", strerror(errno));
         goto error;
@@ -1449,6 +1511,7 @@ int slaveTryPartialResynchronization(int fd, int read_reply) {
             memcpy(psync_offset,"-1",3);
         }
 
+
         /* Issue the PSYNC command */
         reply = sendSynchronousCommand(SYNC_CMD_WRITE,fd,"PSYNC",psync_replid,psync_offset,NULL);
         if (reply != NULL) {
@@ -1628,7 +1691,11 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
          * (we just check for "+") or an authentication error.
          * Note that older versions of Redis replied with "operation not
          * permitted" instead of using a proper error code, so we test
-         * both. */
+         * both.
+         *
+         * Slave发送ping给Master, 但是Master返回-NOAUTH, 我们将同步状态机
+         * 状态置为REPL_STATE_SEND_AUTH
+         */
         if (err[0] != '+' &&
             strncmp(err,"-NOAUTH",7) != 0 &&
             strncmp(err,"-ERR operation not permitted",28) != 0)
@@ -1669,7 +1736,11 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
     }
 
     /* Set the slave port, so that Master's INFO command can list the
-     * slave listening port correctly. */
+     * slave listening port correctly.
+     *
+     * Slave将自己监听的端口告知Master, 方便向Master执行Info命令的时候
+     * 展示slave信息
+     */
     if (server.repl_state == REPL_STATE_SEND_PORT) {
         sds port = sdsfromlonglong(server.slave_announce_port ?
             server.slave_announce_port : server.port);
@@ -1897,6 +1968,7 @@ void undoConnectWithMaster(void) {
 
 /* Abort the async download of the bulk dataset while SYNC-ing with master.
  * Never call this function directly, use cancelReplicationHandshake() instead.
+ * 关闭Master向自己传输RDB链接的文件描述符, 清理已经接收的临时RDB文件
  */
 void replicationAbortSyncTransfer(void) {
     serverAssert(server.repl_state == REPL_STATE_TRANSFER);
@@ -1931,6 +2003,7 @@ int cancelReplicationHandshake(void) {
 
 /* Set replication to the specified master address and port. */
 void replicationSetMaster(char *ip, int port) {
+    // 自己是不是master(不是别人的slave)
     int was_master = server.masterhost == NULL;
 
     sdsfree(server.masterhost);
@@ -1942,7 +2015,9 @@ void replicationSetMaster(char *ip, int port) {
     disconnectAllBlockedClients(); /* Clients blocked in master, now slave. */
 
     /* Force our slaves to resync with us as well. They may hopefully be able
-     * to partially resync with us, but we can notify the replid change. */
+     * to partially resync with us, but we can notify the replid change.
+     * 自己要成为别人的Slave, 首先将自己的Slave断开连接
+     */
     disconnectSlaves();
     cancelReplicationHandshake();
     /* Before destroying our master state, create a cached master using
@@ -2015,7 +2090,8 @@ void slaveofCommand(client *c) {
         if ((getLongFromObjectOrReply(c, c->argv[2], &port, NULL) != C_OK))
             return;
 
-        /* Check if we are already attached to the specified slave */
+        /* Check if we are already attached to the specified slave,
+         * 重复slaveof同一个master场景 */
         if (server.masterhost && !strcasecmp(server.masterhost,c->argv[1]->ptr)
             && server.masterport == port) {
             serverLog(LL_NOTICE,"SLAVE OF would result into synchronization with the master we are already connected with. No operation performed.");
