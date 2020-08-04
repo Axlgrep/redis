@@ -22,25 +22,25 @@ cd $CUR_DIR/redis_cluster/7005 && $REDIS_SERVER ./7005-redis.conf && cd -
 sleep 2
 
 # cluster meet
-$REDIS_CLI -h 127.0.0.1 -p 7000 cluster meet 127.0.0.1 7001
-$REDIS_CLI -h 127.0.0.1 -p 7000 cluster meet 127.0.0.1 7002
-$REDIS_CLI -h 127.0.0.1 -p 7000 cluster meet 127.0.0.1 7003
-$REDIS_CLI -h 127.0.0.1 -p 7000 cluster meet 127.0.0.1 7004
-$REDIS_CLI -h 127.0.0.1 -p 7000 cluster meet 127.0.0.1 7005
+$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster meet 127.0.0.1 7001
+$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster meet 127.0.0.1 7002
+$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster meet 127.0.0.1 7003
+$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster meet 127.0.0.1 7004
+$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster meet 127.0.0.1 7005
 sleep 2
 
 # alloc slot
-$REDIS_CLI -h 127.0.0.1 -p 7000 cluster addslots `seq 0     5461 `
-$REDIS_CLI -h 127.0.0.1 -p 7001 cluster addslots `seq 5462  11282`
-$REDIS_CLI -h 127.0.0.1 -p 7002 cluster addslots `seq 11283 16383`
+$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster addslots `seq 0     5461 `
+$REDIS_CLI -h 127.0.0.1 -p 7001 -a abc cluster addslots `seq 5462  11282`
+$REDIS_CLI -h 127.0.0.1 -p 7002 -a abc cluster addslots `seq 11283 16383`
 
 # add replicate
-node7000=`$REDIS_CLI -h 127.0.0.1 -p 7000 cluster nodes | grep 7000 | awk '{print $1}'`
-node7001=`$REDIS_CLI -h 127.0.0.1 -p 7000 cluster nodes | grep 7001 | awk '{print $1}'`
-node7002=`$REDIS_CLI -h 127.0.0.1 -p 7000 cluster nodes | grep 7001 | awk '{print $1}'`
+node7000=`$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster nodes | grep 7000 | awk '{print $1}'`
+node7001=`$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster nodes | grep 7001 | awk '{print $1}'`
+node7002=`$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster nodes | grep 7001 | awk '{print $1}'`
 
-$REDIS_CLI -h 127.0.0.1 -p 7003 cluster replicate $node7000
-$REDIS_CLI -h 127.0.0.1 -p 7004 cluster replicate $node7001
-$REDIS_CLI -h 127.0.0.1 -p 7005 cluster replicate $node7002
+$REDIS_CLI -h 127.0.0.1 -p 7003 -a abc cluster replicate $node7000
+$REDIS_CLI -h 127.0.0.1 -p 7004 -a abc cluster replicate $node7001
+$REDIS_CLI -h 127.0.0.1 -p 7005 -a abc cluster replicate $node7002
 
 
