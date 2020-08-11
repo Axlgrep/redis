@@ -735,6 +735,7 @@ struct saveparam {
     int changes;
 };
 
+/* 存储加载动态库的一些数据 */
 struct moduleLoadQueueEntry {
     sds path;
     int argc;

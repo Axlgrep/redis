@@ -287,7 +287,11 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
      * Here we try to detect system clock skews, and force all the time
      * events to be processed ASAP when this happens: the idea is that
      * processing events earlier is less dangerous than delaying them
-     * indefinitely, and practice suggests it is. */
+     * indefinitely, and practice suggests it is.
+     *
+     * 这里的观点就是说如果发现系统时钟出现异常, 我们将当前的时间事件
+     * 都尽快的进行触发. 这样比较保险.
+     */
     if (now < eventLoop->lastTime) {
         te = eventLoop->timeEventHead;
         while(te) {
