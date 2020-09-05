@@ -618,7 +618,8 @@ void scanGenericCommand(client *c, robj *o, unsigned long cursor) {
             patlen = sdslen(pat);
 
             /* The pattern always matches if it is exactly "*", so it is
-             * equivalent to disabling it. */
+             * equivalent to disabling it.
+             * 如果pattern不是`*`, 那么才算是使用了模式匹配 */
             use_pattern = !(pat[0] == '*' && patlen == 1);
 
             i += 2;
