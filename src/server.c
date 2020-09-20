@@ -846,11 +846,11 @@ struct redisCommand redisCommandTable[] = {
     /* EVAL can modify the dataset, however it is not flagged as a write
      * command since we do the check while running commands from Lua. */
     {"eval",evalCommand,-3,
-     "no-script @scripting",
+     "no-script use-memory @scripting",
      0,evalGetKeys,0,0,0,0,0,0},
 
     {"evalsha",evalShaCommand,-3,
-     "no-script @scripting",
+     "no-script use-memory @scripting",
      0,evalGetKeys,0,0,0,0,0,0},
 
     {"slowlog",slowlogCommand,-2,
@@ -858,7 +858,7 @@ struct redisCommand redisCommandTable[] = {
      0,NULL,0,0,0,0,0,0},
 
     {"script",scriptCommand,-2,
-     "no-script @scripting",
+     "no-script use-memory @scripting",
      0,NULL,0,0,0,0,0,0},
 
     {"time",timeCommand,1,

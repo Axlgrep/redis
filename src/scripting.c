@@ -1099,7 +1099,7 @@ static void *l_alloc (void *ud, void *ptr, size_t osize, size_t nsize) {
  *
  * However it is simpler to just call scriptingReset() that does just that. */
 void scriptingInit(int setup) {
-    lua_State *lua = lua_open_with_alloc(l_alloc);
+    lua_State *lua = lua_newstate(l_alloc, NULL);
 
     if (setup) {
         server.lua_client = NULL;
