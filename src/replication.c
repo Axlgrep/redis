@@ -739,7 +739,8 @@ void syncCommand(client *c) {
             /* Increment stats for failed PSYNCs, but only if the
              * replid is not "?", as this is used by slaves to force a full
              * resync on purpose when they are not albe to partially
-             * resync. */
+             * resync.
+             * slave尝试增量同步, 但是失败了, stat_sync_partial_err计数器++ */
             if (master_replid[0] != '?') server.stat_sync_partial_err++;
         }
     } else {
@@ -949,7 +950,10 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
 
     /* Before sending the RDB file, we send the preamble as configured by the
      * replication process. Currently the preamble is just the bulk count of
-     * the file in the form "$<length>\r\n". */
+     * the file in the form "$<length>\r\n".
+     *
+     * 在使用非diskless形式发送RDB文件时, 先会发送$<length>\r\n告诉Slave当前RDB
+     * 的大小. */
     if (slave->replpreamble) {
         nwritten = write(fd,slave->replpreamble,sdslen(slave->replpreamble));
         if (nwritten == -1) {
@@ -1538,7 +1542,7 @@ int slaveTryPartialResynchronization(int fd, int read_reply) {
         char *replid = NULL, *offset = NULL;
 
         /* FULL RESYNC, parse the reply in order to extract the run id
-         * and the replication offset. */
+         * and the replication offset(+FULLRESYNC replid offset). */
         replid = strchr(reply,' ');
         if (replid) {
             replid++;
@@ -2689,7 +2693,10 @@ void replicationCron(void) {
      * (configured) time. Note that this cannot be done for slaves: slaves
      * without sub-slaves attached should still accumulate data into the
      * backlog, in order to reply to PSYNC queries if they are turned into
-     * masters after a failover. */
+     * masters after a failover.
+     *
+     * 这里实际上在自身没有挂载从库, 并且当前存在backlog的场景下, 考虑是否对
+     * backlog进行回收, 希望可以释放内存 */
     if (listLength(server.slaves) == 0 && server.repl_backlog_time_limit &&
         server.repl_backlog && server.masterhost == NULL)
     {

@@ -705,10 +705,10 @@ typedef struct client {
     off_t repldboff;        /* Replication DB file offset.     已发送RDB文件的偏移量 */
     off_t repldbsize;       /* Replication DB file size.       RDB文件的体积 */
     sds replpreamble;       /* Replication DB preamble. */
-    long long read_reploff; /* Read replication offset if this is a master. 在复制过程中总共从Master读取了多少数据 */
-    long long reploff;      /* Applied replication offset if this is a master. */
-    long long repl_ack_off; /* Replication ack offset, if this is a slave. */
-    long long repl_ack_time;/* Replication ack time, if this is a slave. */
+    long long read_reploff; /* Read replication offset if this is a master.    (从库身份)在复制过程中总共从Master读取了多少数据 */
+    long long reploff;      /* Applied replication offset if this is a master. (从库身份)在复制过程中总共从Master应用了多少数据(读取的数据不一定都应用了, 要能够解析成一条完整的命令才能够被应用 */
+    long long repl_ack_off; /* Replication ack offset, if this is a slave.     (主库身份)从库给主库回的ACK, 从库已经应用了主库多少数据(对应上面的reploff)*/
+    long long repl_ack_time;/* Replication ack time, if this is a slave.       (主库身份)从库最后一次给主库回ACK的时间戳(如果从库没有在server.repl_timeout时间段内给主库回复ACK, 主库为认为其Timeout从而踢掉 */
     long long psync_initial_offset; /* FULLRESYNC reply offset other slaves
                                        copying this slave output buffer
                                        should use. */
