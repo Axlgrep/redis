@@ -37,7 +37,7 @@ $REDIS_CLI -h 127.0.0.1 -p 7002 -a abc cluster addslots `seq 11283 16383`
 # add replicate
 node7000=`$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster nodes | grep 7000 | awk '{print $1}'`
 node7001=`$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster nodes | grep 7001 | awk '{print $1}'`
-node7002=`$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster nodes | grep 7001 | awk '{print $1}'`
+node7002=`$REDIS_CLI -h 127.0.0.1 -p 7000 -a abc cluster nodes | grep 7002 | awk '{print $1}'`
 
 $REDIS_CLI -h 127.0.0.1 -p 7003 -a abc cluster replicate $node7000
 $REDIS_CLI -h 127.0.0.1 -p 7004 -a abc cluster replicate $node7001
