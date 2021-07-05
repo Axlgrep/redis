@@ -1365,6 +1365,9 @@ void slotToKeyUpdateKey(robj *key, int add) {
     unsigned char *indexed = buf;
     size_t keylen = sdslen(key->ptr);
 
+    /* 这里是先让indexed指向栈上分配的64 Bytes的空间, 如果头部2 Bytes的
+     * 索引加上Key的长度大于64 Bytes, 则无法使用栈上的分配的空间需要去
+     * 堆上分配内存空间了 */
     server.cluster->slots_keys_count[hashslot] += add ? 1 : -1;
     if (keylen+2 > 64) indexed = zmalloc(keylen+2);
     indexed[0] = (hashslot >> 8) & 0xff;

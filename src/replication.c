@@ -2487,7 +2487,9 @@ void waitCommand(client *c) {
     if (getTimeoutFromObjectOrReply(c,c->argv[2],&timeout,UNIT_MILLISECONDS)
         != C_OK) return;
 
-    /* First try without blocking at all. */
+    /* First try without blocking at all.
+     * 如果当前已经满足了ackreplicas >= numreplicas, 或者处于事务当中,
+     * 直接返回ackreplicas */
     ackreplicas = replicationCountAcksByOffset(c->woff);
     if (ackreplicas >= numreplicas || c->flags & CLIENT_MULTI) {
         addReplyLongLong(c,ackreplicas);
