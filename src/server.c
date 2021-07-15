@@ -838,7 +838,13 @@ void clientsCron(void) {
     /* Make sure to process at least numclients/server.hz of clients
      * per call. Since this function is called server.hz times per second
      * we are sure that in the worst case we process all the clients in 1
-     * second. */
+     * second.
+     *
+     * Redis是单线程的, 为了避免单个定时任务执行时间太长从而导致客户端请求
+     * 延迟变高, 所以这里在遍历当前客户端集合的时候做了一定的策略, 在客户端
+     * 集合很大时, 单个clientsCron只处理集合中的部分client(numclients/server.hz),
+     * 但是会确保在最差的情况下所有的客户端会在1秒之内遍历完成.
+     */
     int numclients = listLength(server.clients);
     int iterations = numclients/server.hz;
     mstime_t now = mstime();
@@ -856,7 +862,13 @@ void clientsCron(void) {
 
         /* Rotate the list, take the current head, process.
          * This way if the client must be removed from the list it's the
-         * first element and we don't incur into O(N) computation. */
+         * first element and we don't incur into O(N) computation.
+         *
+         * 由于一次clientCron并不能保证遍历完成server.clients链表, 所以这里
+         * 每次检查之前都先将server.clients链表尾部节点先挪到头部, 然后获取
+         * 头部节点进行检查(这样就避免了在一个有效检查周期重复检查同一个客户
+         * 端多次)
+         */
         listRotate(server.clients);
         head = listFirst(server.clients);
         c = listNodeValue(head);

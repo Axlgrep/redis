@@ -929,7 +929,8 @@ void blockingPopGenericCommand(client *c, int where) {
         return;
     }
 
-    /* If the list is empty or the key does not exists we must block */
+    /* If the list is empty or the key does not exists we must block
+     * c->argv + 1指的是第一个Key的位置, c->argc - 2指的是Key的数量(去掉BLPOP和timeout两个参数) */
     blockForKeys(c, c->argv + 1, c->argc - 2, timeout, NULL);
 }
 

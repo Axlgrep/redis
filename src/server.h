@@ -221,7 +221,7 @@ typedef long long mstime_t; /* millisecond time type. */
 #define CLIENT_MASTER (1<<1)               /* This client is a master server, 这是slave连接master的client */
 #define CLIENT_MONITOR (1<<2)              /* This client is a slave monitor, see MONITOR */
 #define CLIENT_MULTI (1<<3)                /* This client is in a MULTI context, 当前client处于事务状态 */
-#define CLIENT_BLOCKED (1<<4)              /* The client is waiting in a blocking operation */
+#define CLIENT_BLOCKED (1<<4)              /* The client is waiting in a blocking operation, 当前client处于阻塞状态 */
 #define CLIENT_DIRTY_CAS (1<<5)            /* Watched keys modified. EXEC will fail. 当前client监听的Key被修改了, 事物执行将失败 */
 #define CLIENT_CLOSE_AFTER_REPLY (1<<6)    /* Close after writing entire reply. */
 #define CLIENT_UNBLOCKED (1<<7)            /* This client was unblocked and is stored in server.unblocked_clients */
@@ -612,7 +612,7 @@ struct evictionPoolEntry; /* Defined in evict.c */
 typedef struct redisDb {
     dict *dict;                 /* The keyspace for this DB */
     dict *expires;              /* Timeout of keys with a timeout set */
-    dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP)*/
+    dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP), 全局统计当前客户端Block等待的Key(Value是一个链表, 记录等待这个Key的所有Client) */
     dict *ready_keys;           /* Blocked keys that received a PUSH */
     dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS, dict的键存Key, 值存watch该key的client(链表组成) */
     int id;                     /* Database ID */
@@ -642,7 +642,8 @@ typedef struct blockingState {
 
     /* BLOCKED_LIST */
     dict *keys;             /* The keys we are waiting to terminate a blocking
-                             * operation such as BLPOP. Otherwise NULL. */
+                             * operation such as BLPOP. Otherwise NULL.
+                             * 客户端当前阻塞等待的Key会被存放在此 */
     robj *target;           /* The key that should receive the element,
                              * for BRPOPLPUSH. */
 
@@ -1127,9 +1128,9 @@ struct redisServer {
     unsigned int lfu_log_factor;    /* LFU logarithmic counter factor. */
     unsigned int lfu_decay_time;    /* LFU counter decay factor. */
     /* Blocked clients */
-    unsigned int bpop_blocked_clients; /* Number of clients blocked by lists */
+    unsigned int bpop_blocked_clients; /* Number of clients blocked by lists, 全局统计当前处于block状态的client数量 */
     list *unblocked_clients; /* list of clients to unblock before next loop */
-    list *ready_keys;        /* List of readyList structures for BLPOP & co */
+    list *ready_keys;        /* List of readyList structures for BLPOP & co , 已经就绪Key的集合 */
     /* Sort parameters - qsort_r() is only available under BSD so we
      * have to take this state global, in order to pass it to sortCompare() */
     int sort_desc;

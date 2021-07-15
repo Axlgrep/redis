@@ -28,3 +28,6 @@ deps/lua/src/liblua.a
 .prerequisites
 *.dSYM
 Makefile.dep
+master*
+redis_cluster/*
+redis_standby/*
