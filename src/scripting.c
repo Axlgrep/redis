@@ -465,6 +465,8 @@ int luaRedisGenericCommand(lua_State *lua, int raise_error) {
     }
     c->cmd = c->lastcmd = cmd;
 
+    /* 这里主要是限制一些命令在lua中执行, 比如事务相关, pub/sub, watch等等,
+     * 如果在lua中遇到此类命令, 就直接报错 */
     /* There are commands that are not allowed inside scripts. */
     if (cmd->flags & CMD_NOSCRIPT) {
         luaPushError(lua, "This Redis command is not allowed from scripts");
@@ -1184,6 +1186,8 @@ void luaMaskCountHook(lua_State *lua, lua_Debug *ar) {
     UNUSED(lua);
 
     elapsed = mstime() - server.lua_time_start;
+    /* Lua脚本执行设置的超时时间是5s, 在超过5s之后, 会设置lua超时状态, 并且
+     * 在日志中会提示用户可以使用script kill命令来kill当前还在运行的lua程序 */
     if (elapsed >= server.lua_time_limit && server.lua_timedout == 0) {
         serverLog(LL_WARNING,"Lua slow script detected: still in execution after %lld milliseconds. You can try killing the script using the SCRIPT KILL command.",elapsed);
         server.lua_timedout = 1;
@@ -1194,6 +1198,8 @@ void luaMaskCountHook(lua_State *lua, lua_Debug *ar) {
          * here when the EVAL command will return. */
          aeDeleteFileEvent(server.el, server.lua_caller->fd, AE_READABLE);
     }
+    /* 如果lua已经超时了, 那么这边会周期性的调用事件处理函数, 避免server阻塞
+     * 太久(主要是可以让新客户端连接上来执行script kill命令) */
     if (server.lua_timedout) processEventsWhileBlocked();
     if (server.lua_kill) {
         serverLog(LL_WARNING,"Lua script killed by user with SCRIPT KILL.");
@@ -1226,13 +1232,16 @@ void evalGenericCommand(client *c, int evalsha) {
     server.lua_multi_emitted = 0;
     server.lua_repl = PROPAGATE_AOF|PROPAGATE_REPL;
 
-    /* Get the number of arguments that are keys */
+    /* Get the number of arguments that are keys
+     * 这里是获取第三个参数numkeys的值 */
     if (getLongLongFromObjectOrReply(c,c->argv[2],&numkeys,NULL) != C_OK)
         return;
     if (numkeys > (c->argc - 3)) {
+        /* 如果numkeys的值比总参数 - 3还要大, 表示非法, 报错处理 */
         addReplyError(c,"Number of keys can't be greater than number of args");
         return;
     } else if (numkeys < 0) {
+        /* numkeys为负数, 报错 */
         addReplyError(c,"Number of keys can't be negative");
         return;
     }
@@ -1242,7 +1251,9 @@ void evalGenericCommand(client *c, int evalsha) {
     funcname[0] = 'f';
     funcname[1] = '_';
     if (!evalsha) {
-        /* Hash the code if this is an EVAL call */
+        /* Hash the code if this is an EVAL call,
+         * 如果不是给的evalsha, 那么将客户端给定的lua脚本
+         * 通过sha1算法序列号成一个40 Bytes的字符串 */
         sha1hex(funcname+2,c->argv[1]->ptr,sdslen(c->argv[1]->ptr));
     } else {
         /* We already have the SHA if it is a EVALSHA */
@@ -1251,7 +1262,7 @@ void evalGenericCommand(client *c, int evalsha) {
 
         /* Convert to lowercase. We don't use tolower since the function
          * managed to always show up in the profiler output consuming
-         * a non trivial amount of time. */
+         * a non trivial amount of time. 将SHA转换成小写 */
         for (j = 0; j < 40; j++)
             funcname[j+2] = (sha[j] >= 'A' && sha[j] <= 'Z') ?
                 sha[j]+('a'-'A') : sha[j];
@@ -1261,31 +1272,36 @@ void evalGenericCommand(client *c, int evalsha) {
     /* Push the pcall error handler function on the stack. */
     lua_getglobal(lua, "__redis__err__handler");
 
-    /* Try to lookup the Lua function */
+    /* Try to lookup the Lua function,
+     * 这里应该是尝试用sha来获取对应的lua脚本 */
     lua_getglobal(lua, funcname);
     if (lua_isnil(lua,-1)) {
         lua_pop(lua,1); /* remove the nil from the stack */
         /* Function not defined... let's define it if we have the
          * body of the function. If this is an EVALSHA call we can just
-         * return an error. */
+         * return an error. 如果当前用户是evalsha访问, 由于给定的sha找不
+         * 到与之对应的lua脚本, 直接报错 */
         if (evalsha) {
             lua_pop(lua,1); /* remove the error handler from the stack. */
             addReply(c, shared.noscripterr);
             return;
         }
+        /* 这里是用户给定了lua脚本, 我们在lua中定义一个新的函数 */
         if (luaCreateFunction(c,lua,funcname,c->argv[1]) == C_ERR) {
             lua_pop(lua,1); /* remove the error handler from the stack. */
             /* The error is sent to the client by luaCreateFunction()
              * itself when it returns C_ERR. */
             return;
         }
-        /* Now the following is guaranteed to return non nil */
+        /* Now the following is guaranteed to return non nil,
+         * 确保新函数已经定义成功 */
         lua_getglobal(lua, funcname);
         serverAssert(!lua_isnil(lua,-1));
     }
 
     /* Populate the argv and keys table accordingly to the arguments that
-     * EVAL received. */
+     * EVAL received.
+     * 指定当前Client执行Lua脚本的Keys和Argv */
     luaSetGlobalArray(lua,"KEYS",c->argv+3,numkeys);
     luaSetGlobalArray(lua,"ARGV",c->argv+3+numkeys,c->argc-3-numkeys);
 
@@ -1456,10 +1472,15 @@ void scriptCommand(client *c) {
         forceCommandPropagation(c,PROPAGATE_REPL|PROPAGATE_AOF);
     } else if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"kill")) {
         if (server.lua_caller == NULL) {
+            /* 当前并没有任何客户端正在执行lua脚本, 直接返回 */
             addReplySds(c,sdsnew("-NOTBUSY No scripts in execution right now.\r\n"));
         } else if (server.lua_write_dirty) {
+            /* 如果当前有lua脚本正在运行, 并且已经执行了写命令, 就无法通过script kill命令停止了,
+             * 只能等lua脚本执行完毕, 或者使用采用nosave的形式直接退出server(这里主要考虑的是
+             * 如果lua脚本执行到一半直接退出, 数据会变脏, 无法保证原子性)*/
             addReplySds(c,sdsnew("-UNKILLABLE Sorry the script already executed write commands against the dataset. You can either wait the script termination or kill the server in a hard way using the SHUTDOWN NOSAVE command.\r\n"));
         } else {
+            /* 设置lua_kill标记, lua脚本执行过程中定期回调, 检查到该标记为1, 就会报错退出 */
             server.lua_kill = 1;
             addReply(c,shared.ok);
         }
