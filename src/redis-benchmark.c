@@ -839,6 +839,33 @@ int main(int argc, const char **argv) {
             free(cmd);
         }
 
+        if (test_is_selected("hmset50")) {
+          const int32_t num = 5;
+          const char *argv[2 * num + 2];
+          char fields[num][200];
+          argv[0] = "HMSET";
+          argv[1] = "myhash:__rand_int__";
+          for (i = 0; i < num; i++) {
+            int32_t num = random() % 100000;
+            sprintf(fields[i], "field:%d", num);
+            argv[2 * i + 2] = fields[i];
+            argv[2 * i + 3] = data;
+          }
+          len = redisFormatCommandArgv(&cmd, 2 * num + 2, argv, NULL);
+          benchmark("HMSET (50 keys)",cmd,len);
+          free(cmd);
+        }
+
+        if (test_is_selected("expire30")) {
+          const char *argv[3];
+          argv[0] = "EXPIRE";
+          argv[1] = "myhash:__rand_int__";
+          argv[2] = "30";
+          len = redisFormatCommandArgv(&cmd, 3, argv, NULL);
+          benchmark("EXPIRE KEY 30S",cmd,len);
+          free(cmd);
+        }
+
         if (!config.csv) printf("\n");
     } while(config.loop);
 

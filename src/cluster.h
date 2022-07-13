@@ -40,7 +40,9 @@ struct clusterNode;
 typedef struct clusterLink {
     mstime_t ctime;             /* Link creation time */
     int fd;                     /* TCP socket file descriptor */
-    sds sndbuf;                 /* Packet send buffer */
+    sds sndbuf;                 /* Packet send buffer, 待发送消息的buffer, 如果长度非0,
+                                 * 表示当前连接还一直监听AE_WRITABLE事件, 如果发送完成
+                                 * 那么将AE_WRITABLE事件取消监听 */
     sds rcvbuf;                 /* Packet reception buffer */
     struct clusterNode *node;   /* Node related to this link if any, or NULL */
 } clusterLink;
@@ -108,15 +110,15 @@ typedef struct clusterNode {
     int flags;      /* CLUSTER_NODE_... */
     uint64_t configEpoch; /* Last configEpoch observed for this node */
     unsigned char slots[CLUSTER_SLOTS/8]; /* slots handled by this node */
-    int numslots;   /* Number of slots handled by this node */
+    int numslots;   /* Number of slots handled by this node, 当前节点负责了几个slot(只有master才能负责slot) */
     int numslaves;  /* Number of slave nodes, if this is a master */
     struct clusterNode **slaves; /* pointers to slave nodes */
     struct clusterNode *slaveof; /* pointer to the master node. Note that it
                                     may be NULL even if the node is a slave
                                     if we don't have the master node in our
                                     tables. */
-    mstime_t ping_sent;      /* Unix time we sent latest ping */
-    mstime_t pong_received;  /* Unix time we received the pong */
+    mstime_t ping_sent;      /* Unix time we sent latest ping, 最后一次发送ping的时间戳, (如果已经收到了pong), 那么ping会被置0 */
+    mstime_t pong_received;  /* Unix time we received the pong 最后一次接收pong的时间戳 */
     mstime_t fail_time;      /* Unix time when FAIL flag was set */
     mstime_t voted_time;     /* Last time we voted for a slave of this master */
     mstime_t repl_offset_time;  /* Unix time we received offset for this node */
@@ -133,7 +135,7 @@ typedef struct clusterState {
     clusterNode *myself;  /* This node */
     uint64_t currentEpoch;
     int state;            /* CLUSTER_OK, CLUSTER_FAIL, ... */
-    int size;             /* Num of master nodes with at least one slot */
+    int size;             /* Num of master nodes with at least one slot, 这里是有多少个负责至少一个slot的master节点数量 */
     dict *nodes;          /* Hash table of name -> clusterNode structures */
     dict *nodes_black_list; /* Nodes we don't re-add for a few seconds. */
     clusterNode *migrating_slots_to[CLUSTER_SLOTS];
@@ -162,7 +164,8 @@ typedef struct clusterState {
     /* The followign fields are used by masters to take state on elections. */
     uint64_t lastVoteEpoch;     /* Epoch of the last vote granted. */
     int todo_before_sleep; /* Things to do in clusterBeforeSleep(). */
-    /* Messages received and sent by type. */
+    /* Messages received and sent by type.
+     * 这里是当前节点集群消息发送和接受的统计 */
     long long stats_bus_messages_sent[CLUSTERMSG_TYPE_COUNT];
     long long stats_bus_messages_received[CLUSTERMSG_TYPE_COUNT];
     long long stats_pfail_nodes;    /* Number of nodes in PFAIL status,
