@@ -736,6 +736,12 @@ int main(int argc, const char **argv) {
             free(cmd);
         }
 
+        if (test_is_selected("setex")) {
+            len = redisFormatCommand(&cmd,"SETEX key:__rand_int__ 10 %s",data);
+            benchmark("SETEX",cmd,len);
+            free(cmd);
+        }
+
         if (test_is_selected("get")) {
             len = redisFormatCommand(&cmd,"GET key:__rand_int__");
             benchmark("GET",cmd,len);
@@ -853,6 +859,14 @@ int main(int argc, const char **argv) {
           }
           len = redisFormatCommandArgv(&cmd, 2 * num + 2, argv, NULL);
           benchmark("HMSET (50 keys)",cmd,len);
+          free(cmd);
+        }
+
+        /* zadd zset 0 element */
+        if (test_is_selected("zadd")) {
+          len = redisFormatCommand(&cmd,
+              "ZADD myzset 0 element:__rand_int__");
+          benchmark("ZADD",cmd,len);
           free(cmd);
         }
 

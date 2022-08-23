@@ -175,7 +175,9 @@ void replyToBlockedClientTimedOut(client *c) {
  * is called when a master turns into a slave.
  *
  * The semantics is to send an -UNBLOCKED error to the client, disconnecting
- * it at the same time. */
+ * it at the same time.
+ *
+ * 由于状态发生变化, 将之前阻塞住的客户端进行报错断连处理是安全的做法 */
 void disconnectAllBlockedClients(void) {
     listNode *ln;
     listIter li;

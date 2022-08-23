@@ -92,7 +92,7 @@ typedef struct clusterLink {
 #define CLUSTERMSG_TYPE_MEET 2          /* Meet "let's join" message */
 #define CLUSTERMSG_TYPE_FAIL 3          /* Mark node xxx as failing */
 #define CLUSTERMSG_TYPE_PUBLISH 4       /* Pub/Sub Publish propagation */
-#define CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST 5 /* May I failover? */
+#define CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST 5 /* May I failover? 发起Failover的消息请求 */
 #define CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK 6     /* Yes, you have my vote */
 #define CLUSTERMSG_TYPE_UPDATE 7        /* Another node slots configuration */
 #define CLUSTERMSG_TYPE_MFSTART 8       /* Pause clients for manual failover */
@@ -100,8 +100,8 @@ typedef struct clusterLink {
 
 /* This structure represent elements of node->fail_reports. */
 typedef struct clusterNodeFailReport {
-    struct clusterNode *node;  /* Node reporting the failure condition. */
-    mstime_t time;             /* Time of the last report from this node. */
+    struct clusterNode *node;  /* Node reporting the failure condition.   报告故障的源节点 */
+    mstime_t time;             /* Time of the last report from this node. 报告故障的时间戳 */
 } clusterNodeFailReport;
 
 typedef struct clusterNode {
@@ -111,24 +111,24 @@ typedef struct clusterNode {
     uint64_t configEpoch; /* Last configEpoch observed for this node */
     unsigned char slots[CLUSTER_SLOTS/8]; /* slots handled by this node */
     int numslots;   /* Number of slots handled by this node, 当前节点负责了几个slot(只有master才能负责slot) */
-    int numslaves;  /* Number of slave nodes, if this is a master */
+    int numslaves;  /* Number of slave nodes, if this is a master, 当前结点有几个Slave(只有Master才有Slave, 因为集群不支持链式复制, 只支持星型复制)  */
     struct clusterNode **slaves; /* pointers to slave nodes */
     struct clusterNode *slaveof; /* pointer to the master node. Note that it
                                     may be NULL even if the node is a slave
                                     if we don't have the master node in our
                                     tables. */
-    mstime_t ping_sent;      /* Unix time we sent latest ping, 最后一次发送ping的时间戳, (如果已经收到了pong), 那么ping会被置0 */
-    mstime_t pong_received;  /* Unix time we received the pong 最后一次接收pong的时间戳 */
-    mstime_t fail_time;      /* Unix time when FAIL flag was set */
-    mstime_t voted_time;     /* Last time we voted for a slave of this master */
-    mstime_t repl_offset_time;  /* Unix time we received offset for this node */
-    mstime_t orphaned_time;     /* Starting time of orphaned master condition */
+    mstime_t ping_sent;         /* Unix time we sent latest ping, 最后一次发送ping的时间戳, (如果已经收到了pong), 那么ping会被置0 */
+    mstime_t pong_received;     /* Unix time we received the pong 最后一次接收pong的时间戳 */
+    mstime_t fail_time;         /* Unix time when FAIL flag was set */
+    mstime_t voted_time;        /* Last time we voted for a slave of this master */
+    mstime_t repl_offset_time;  /* Unix time we received offset for this node, 我们最后一次更新该节点binlog偏移量的时间戳 */
+    mstime_t orphaned_time;     /* Starting time of orphaned master condition, 该节点当前的Binlog偏移量 */
     long long repl_offset;      /* Last known repl offset for this node. */
-    char ip[NET_IP_STR_LEN];  /* Latest known IP address of this node */
+    char ip[NET_IP_STR_LEN];    /* Latest known IP address of this node,  节点对应的ip地址 */
     int port;                   /* Latest known clients port of this node */
     int cport;                  /* Latest known cluster port of this node. */
     clusterLink *link;          /* TCP/IP link with this node */
-    list *fail_reports;         /* List of nodes signaling this as failing */
+    list *fail_reports;         /* List of nodes signaling this as failing, 链表中存放有哪些其他节点报告当前节点处于故障状态 */
 } clusterNode;
 
 typedef struct clusterState {
@@ -145,24 +145,27 @@ typedef struct clusterState {
     rax *slots_to_keys;
     /* The following fields are used to take the slave state on elections. */
     mstime_t failover_auth_time; /* Time of previous or next election. */
-    int failover_auth_count;    /* Number of votes received so far. */
-    int failover_auth_sent;     /* True if we already asked for votes. */
-    int failover_auth_rank;     /* This slave rank for current auth request. */
-    uint64_t failover_auth_epoch; /* Epoch of the current election. */
+    int failover_auth_count;    /* Number of votes received so far.          当前节点发起选举之后已经获得了多少投票 */
+    int failover_auth_sent;     /* True if we already asked for votes.       当前节点是否已经发起了failover投票, 已经发起了为1, 否则为0 */
+    int failover_auth_rank;     /* This slave rank for current auth request. 当前slave节点在所在分片slave中的排名情况(根据offset计算得出, offset越大排名越高, 能越早发起failover) */
+    uint64_t failover_auth_epoch; /* Epoch of the current election.          当前节点发起选举的epoch */
     int cant_failover_reason;   /* Why a slave is currently not able to
                                    failover. See the CANT_FAILOVER_* macros. */
     /* Manual failover state in common. */
     mstime_t mf_end;            /* Manual failover time limit (ms unixtime).
-                                   It is zero if there is no MF in progress. */
+                                   It is zero if there is no MF in progress.
+                                   这里设置的是MF的超时时间, 默认是启动MF的
+                                   时间点加5s, 如果当前没有mf操作, 值为0 */
     /* Manual failover state of master. */
     clusterNode *mf_slave;      /* Slave performing the manual failover. */
     /* Manual failover state of slave. */
     long long mf_master_offset; /* Master offset the slave needs to start MF
-                                   or zero if stil not received. */
+                                   or zero if stil not received.
+                                   等到master已经确认所有客户端处于Pause状态, 此时Slave节点更新自己的mf_master_offset, 目标是追齐binlog */
     int mf_can_start;           /* If non-zero signal that the manual failover
                                    can start requesting masters vote. */
     /* The followign fields are used by masters to take state on elections. */
-    uint64_t lastVoteEpoch;     /* Epoch of the last vote granted. */
+    uint64_t lastVoteEpoch;     /* Epoch of the last vote granted. 最后一次投票的Epoch */
     int todo_before_sleep; /* Things to do in clusterBeforeSleep(). */
     /* Messages received and sent by type.
      * 这里是当前节点集群消息发送和接受的统计 */
@@ -232,6 +235,9 @@ union clusterMsgData {
 
 #define CLUSTER_PROTO_VER 1 /* Cluster bus protocol version. */
 
+/* 这里需要注意的是在clusterMsg消息头会带上当前节点的offset,
+ * 而clusterMsgDataGossip中只有自身视角下的其他节点信息了,
+ * 包括节点名称, 地址信息, 和ping/pong状态, flags等 */
 typedef struct {
     char sig[4];        /* Siganture "RCmb" (Redis Cluster message bus). */
     uint32_t totlen;    /* Total length of this message */

@@ -696,7 +696,7 @@ typedef struct client {
     size_t sentlen;         /* Amount of bytes already sent in the current
                                buffer or object being sent. 就是用于记录当前reply buffer或者reply list中某个node已经发送的位置*/
     time_t ctime;           /* Client creation time. */
-    time_t lastinteraction; /* Time of the last interaction, used for timeout, 记录最后一次通行时间，用于判定超时 */
+    time_t lastinteraction; /* Time of the last interaction, used for timeout, 记录最后一次通信时间，用于判定超时 */
     time_t obuf_soft_limit_reached_time;
     int flags;              /* Client flags: CLIENT_* macros. */
     int authenticated;      /* When requirepass is non-NULL. 认证通过为1，否则为0 */
@@ -1093,7 +1093,7 @@ struct redisServer {
     off_t repl_transfer_size;       /* Size of RDB to read from master during sync. */
     off_t repl_transfer_read;       /* Amount of RDB read from master during sync. */
     off_t repl_transfer_last_fsync_off; /* Offset when we fsync-ed last time. */
-    int repl_transfer_s;            /* Slave -> Master SYNC socket,              Slave -> Master同步的套接字文件描述符 */
+    int repl_transfer_s;            /* Slave -> Master SYNC socket,              Slave -> Master同步的套接字文件描述符(握手, RDB传输, 增量同步都是用这个套接字) */
     int repl_transfer_fd;           /* Slave -> Master SYNC temp file descriptor Slave打开临时文件的文件描述符用于存储Master发过来的RDB数据 */
     char *repl_transfer_tmpfile; /* Slave-> master SYNC temp file name           Slave打开零食文件的文件名称 */
     time_t repl_transfer_lastio; /* Unix time of the latest read, for timeout, 最后读取数据的时间(读取RDB文件?) */

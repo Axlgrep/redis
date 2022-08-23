@@ -524,13 +524,13 @@ int masterTryPartialResynchronization(client *c) {
     {
         /* Run id "?" is used by slaves that want to force a full resync.
          * 这里实际上分为以下几种情况:
-         * master_replid为?, 表示slave主动全同步
-         * master_replid不为?, 但是与server.replid和server.replid2都不同,
-         * 这存在不同的复制历史, 被动需要全同步
-         * master_replid不为?, 与server.replid相同, 需要检查psync_offset和
-         * backlog区间的关系，再做决定
-         * master_replid不为?, 与server.replid2相同, 只有psync_offset在小于
-         * 等于server.second_replid_offset的前提下才有可能增量同步
+         * 1. master_replid为?, 表示slave主动全同步
+         * 2. master_replid不为?, 但是与server.replid和server.replid2都不同,
+         *    这存在不同的复制历史, 被动需要全同步
+         * 3. master_replid不为?, 与server.replid相同, 需要检查psync_offset和
+         *    backlog区间的关系，再做决定
+         * 4. master_replid不为?, 与server.replid2相同, 只有psync_offset在小于
+         *    等于server.second_replid_offset的前提下才有可能增量同步
          */
         if (master_replid[0] != '?') {
             if (strcasecmp(master_replid, server.replid) &&
@@ -700,8 +700,9 @@ void syncCommand(client *c) {
 
     /* Refuse SYNC requests if we are a slave but the link with our master
      * is not ok...
-     * 如果当前处于和自己的Master建立主从关系的过程中，则无法响应其他Slave的
-     * 同步请求
+     *
+     * 链式同步场景下, 如果当前处于和自己的Master建立主从关系的过程中，则
+     * 无法响应其他Slave的同步请求
      */
     if (server.masterhost && server.repl_state != REPL_STATE_CONNECTED) {
         addReplySds(c,sdsnew("-NOMASTERLINK Can't SYNC while not connected with my master\r\n"));
@@ -1496,7 +1497,7 @@ int slaveTryPartialResynchronization(int fd, int read_reply) {
     char psync_offset[32];
     sds reply;
 
-    /* Writing half */
+    /* Writing half, 发送请求逻辑 */
     if (!read_reply) {
         /* Initially set master_initial_offset to -1 to mark the current
          * master run_id and offset as not valid. Later if we'll be able to do
@@ -1527,7 +1528,7 @@ int slaveTryPartialResynchronization(int fd, int read_reply) {
         return PSYNC_WAIT_REPLY;
     }
 
-    /* Reading half */
+    /* Reading half, 接收回复逻辑 */
     reply = sendSynchronousCommand(SYNC_CMD_READ,fd,NULL);
     if (sdslen(reply) == 0) {
         /* The master may send empty newlines after it receives PSYNC
@@ -1673,7 +1674,8 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
         goto error;
     }
 
-    /* Send a PING to check the master is able to reply without errors. */
+    /* Send a PING to check the master is able to reply without errors.
+     * 首先以同步的形式发送Ping给Master, 做一下简单的Check */
     if (server.repl_state == REPL_STATE_CONNECTING) {
         serverLog(LL_NOTICE,"Non blocking connect for SYNC fired the event.");
         /* Delete the writable event so that the readable event remains
@@ -1698,8 +1700,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
          * both.
          *
          * Slave发送ping给Master, 但是Master返回-NOAUTH, 我们将同步状态机
-         * 状态置为REPL_STATE_SEND_AUTH
-         */
+         * 状态置为REPL_STATE_SEND_AUTH */
         if (err[0] != '+' &&
             strncmp(err,"-NOAUTH",7) != 0 &&
             strncmp(err,"-ERR operation not permitted",28) != 0)
@@ -1715,7 +1716,8 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
         server.repl_state = REPL_STATE_SEND_AUTH;
     }
 
-    /* AUTH with the master if required. */
+    /* AUTH with the master if required.
+     * 如果需要发送auth校验的话则发送校验 */
     if (server.repl_state == REPL_STATE_SEND_AUTH) {
         if (server.masterauth) {
             err = sendSynchronousCommand(SYNC_CMD_WRITE,fd,"AUTH",server.masterauth,NULL);
@@ -1961,6 +1963,8 @@ int connectWithMaster(void) {
 /* This function can be called when a non blocking connection is currently
  * in progress to undo it.
  * Never call this function directly, use cancelReplicationHandshake() instead.
+ *
+ * 关闭与Master进行数据同步的socket
  */
 void undoConnectWithMaster(void) {
     int fd = server.repl_transfer_s;
@@ -1972,6 +1976,7 @@ void undoConnectWithMaster(void) {
 
 /* Abort the async download of the bulk dataset while SYNC-ing with master.
  * Never call this function directly, use cancelReplicationHandshake() instead.
+ *
  * 关闭Master向自己传输RDB链接的文件描述符, 清理已经接收的临时RDB文件
  */
 void replicationAbortSyncTransfer(void) {
@@ -1989,7 +1994,13 @@ void replicationAbortSyncTransfer(void) {
  * If there was a replication handshake in progress 1 is returned and
  * the replication state (server.repl_state) set to REPL_STATE_CONNECT.
  *
- * Otherwise zero is returned and no operation is perforemd at all. */
+ * Otherwise zero is returned and no operation is perforemd at all.
+ *
+ * 如果之前处于以下三种阶段, 则做对应的清理操作, 重置主从同步状态机:
+ * 1. 握手阶段
+ * 2. 同步RDB文件阶段
+ * 3. 已经进入增量同步阶段
+ */
 int cancelReplicationHandshake(void) {
     if (server.repl_state == REPL_STATE_TRANSFER) {
         replicationAbortSyncTransfer();
@@ -2007,7 +2018,7 @@ int cancelReplicationHandshake(void) {
 
 /* Set replication to the specified master address and port. */
 void replicationSetMaster(char *ip, int port) {
-    // 自己是不是master(不是别人的slave)
+    /* 自己是不是master(不是别人的slave) */
     int was_master = server.masterhost == NULL;
 
     sdsfree(server.masterhost);
@@ -2020,8 +2031,8 @@ void replicationSetMaster(char *ip, int port) {
 
     /* Force our slaves to resync with us as well. They may hopefully be able
      * to partially resync with us, but we can notify the replid change.
-     * 自己要成为别人的Slave, 首先将自己的Slave断开连接
-     */
+     *
+     * 自己要成为别人的Slave, 首先将自己的Slave断开连接 */
     disconnectSlaves();
     cancelReplicationHandshake();
     /* Before destroying our master state, create a cached master using
@@ -2580,7 +2591,9 @@ long long replicationGetSlaveOffset(void) {
 void replicationCron(void) {
     static long long replication_cron_loops = 0;
 
-    /* Non blocking connection timeout? */
+    /* Non blocking connection timeout?
+     * 如果已经处于建连或者握手状态, 但是长时间没有更新状态(默认60s),
+     * 这时候我们认为超时, 重置状态机, 重新发起同步流程 */
     if (server.masterhost &&
         (server.repl_state == REPL_STATE_CONNECTING ||
          slaveIsInHandshakeState()) &&
@@ -2590,7 +2603,8 @@ void replicationCron(void) {
         cancelReplicationHandshake();
     }
 
-    /* Bulk transfer I/O timeout? */
+    /* Bulk transfer I/O timeout?
+     * 如果已经处于接收RDB的状态*, 但是RDB长时间没有更新(行为同上) */
     if (server.masterhost && server.repl_state == REPL_STATE_TRANSFER &&
         (time(NULL)-server.repl_transfer_lastio) > server.repl_timeout)
     {
@@ -2598,7 +2612,9 @@ void replicationCron(void) {
         cancelReplicationHandshake();
     }
 
-    /* Timed out master when we are an already connected slave? */
+    /* Timed out master when we are an already connected slave?
+     * 如果已经处于增量同步状态中, 但是主库很长时间没有同步数据并且也没有发心跳给
+     * 给自己了, 那么断开主从连接(梳理一下这里和上面cancelReplicationHandshake的区别) */
     if (server.masterhost && server.repl_state == REPL_STATE_CONNECTED &&
         (time(NULL)-server.master->lastinteraction) > server.repl_timeout)
     {
@@ -2606,7 +2622,9 @@ void replicationCron(void) {
         freeClient(server.master);
     }
 
-    /* Check if we should connect to a MASTER */
+    /* Check if we should connect to a MASTER
+     * 如果当前状态机为REPL_STATE_CONNECT, 那么与master建立
+     * 连接, 并且监听连接FD对应为文件事件(主要就是syncWithMaster) */
     if (server.repl_state == REPL_STATE_CONNECT) {
         serverLog(LL_NOTICE,"Connecting to MASTER %s:%d",
             server.masterhost, server.masterport);
